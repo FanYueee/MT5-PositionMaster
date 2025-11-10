@@ -44,7 +44,7 @@ input string InpBotToken = "";                    // Telegram Bot Token (必填)
 input long InpChatID = 0;                         // 授權的 Chat ID (必填)
 
 /** @brief 輪詢間隔（秒） */
-input int InpPollingInterval = 3;                 // 輪詢間隔（秒）
+input int InpPollingInterval = 2;                 // 輪詢間隔（秒）
 
 /** @brief 是否啟用詳細日誌 */
 input bool InpVerboseLogging = true;              // 啟用詳細日誌
@@ -95,19 +95,19 @@ int OnInit()
     //--- 驗證輸入參數
     if(StringLen(InpBotToken) == 0)
     {
-        Print("錯誤：Bot Token 不能為空！請在 EA 設置中填寫 Telegram Bot Token。");
+        Print("[錯誤]：Bot Token 不能為空！請在 EA 設置中填寫 Telegram Bot Token。");
         return INIT_PARAMETERS_INCORRECT;
     }
 
     if(InpChatID == 0)
     {
-        Print("錯誤：Chat ID 不能為 0！請在 EA 設置中填寫授權的 Telegram Chat ID。");
+        Print("[錯誤]：Chat ID 不能為 0！請在 EA 設置中填寫授權的 Telegram Chat ID。");
         return INIT_PARAMETERS_INCORRECT;
     }
 
     if(InpPollingInterval < 1)
     {
-        Print("錯誤：輪詢間隔不能小於 1 秒！");
+        Print("[錯誤]：輪詢間隔不能小於 1 秒！");
         return INIT_PARAMETERS_INCORRECT;
     }
 
