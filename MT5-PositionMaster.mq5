@@ -839,7 +839,7 @@ void SendHelpMessage()
     helpText += "   （智能選擇訂單以達到最接近 50%）\n\n";
     helpText += "<b>[信息] 幫助：</b>\n";
     helpText += "/help - 顯示此幫助信息\n\n";
-    helpText += "<i>提示：所有指令都會作用於當前交易品種 (" + _Symbol + ") 的所有倉位。</i>";
+    helpText += "<i>提示：所有指令都會作用於所有交易品種的所有倉位。</i>";
 
     SendTelegramMessage(helpText);
 }
@@ -901,9 +901,6 @@ int ModifyAllTakeProfit(double targetPrice)
         if(ticket == 0)
             continue;
 
-        //--- 只處理當前交易品種
-        if(PositionGetString(POSITION_SYMBOL) != _Symbol)
-            continue;
 
         //--- 獲取當前倉位信息
         double currentSL = PositionGetDouble(POSITION_SL);
@@ -982,9 +979,6 @@ int ModifyAllStopLoss(double targetPrice)
         if(ticket == 0)
             continue;
 
-        //--- 只處理當前交易品種
-        if(PositionGetString(POSITION_SYMBOL) != _Symbol)
-            continue;
 
         //--- 獲取當前倉位信息
         double currentTP = PositionGetDouble(POSITION_TP);
@@ -1060,9 +1054,6 @@ int RemoveAllTakeProfit()
         if(ticket == 0)
             continue;
 
-        //--- 只處理當前交易品種
-        if(PositionGetString(POSITION_SYMBOL) != _Symbol)
-            continue;
 
         //--- 獲取當前止損
         double currentSL = PositionGetDouble(POSITION_SL);
@@ -1127,9 +1118,6 @@ int RemoveAllStopLoss()
         if(ticket == 0)
             continue;
 
-        //--- 只處理當前交易品種
-        if(PositionGetString(POSITION_SYMBOL) != _Symbol)
-            continue;
 
         //--- 獲取當前止盈
         double currentTP = PositionGetDouble(POSITION_TP);
@@ -1210,9 +1198,6 @@ double CloseHalfPositions()
         if(ticket == 0)
             continue;
 
-        //--- 只處理當前交易品種
-        if(PositionGetString(POSITION_SYMBOL) != _Symbol)
-            continue;
 
         double lots = PositionGetDouble(POSITION_VOLUME);
         totalLots += lots;
@@ -1227,7 +1212,7 @@ double CloseHalfPositions()
 
     if(posCount == 0)
     {
-        Print("[信息] 當前交易品種沒有開倉倉位");
+        Print("[信息] 沒有開倉倉位");
         return 0;
     }
 
