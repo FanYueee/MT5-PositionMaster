@@ -985,14 +985,14 @@ void ProcessCallbackQuery(string callbackData, string callbackQueryID)
     {
         //--- 設置止盈 - 進入等待輸入狀態
         g_userState = STATE_WAITING_TP;
-        SendTelegramMessage("🎯 請輸入止盈價格（純數字）：\n\n例如：2050.50");
+        SendTelegramMessage("🎯 請輸入止盈價格（純數字）：\n\n例如：2050.50\n\n輸入 cancel 可取消操作");
         // 不重新發送面板，等待用戶輸入
     }
     else if(callbackData == "SETSL")
     {
         //--- 設置止損 - 進入等待輸入狀態
         g_userState = STATE_WAITING_SL;
-        SendTelegramMessage("🛡️ 請輸入止損價格（純數字）：\n\n例如：2040.30");
+        SendTelegramMessage("🛡️ 請輸入止損價格（純數字）：\n\n例如：2040.30\n\n輸入 cancel 可取消操作");
         // 不重新發送面板，等待用戶輸入
     }
     else if(callbackData == "RTP")
@@ -1074,6 +1074,21 @@ void ProcessCommand(string command)
     //--- 檢查用戶是否處於等待輸入狀態
     if(g_userState != STATE_IDLE)
     {
+        //--- 先檢查是否為取消指令（支持 /cancel 或 cancel）
+        string commandLowerTemp = command;
+        StringToLower(commandLowerTemp);
+        StringTrimLeft(commandLowerTemp);
+        StringTrimRight(commandLowerTemp);
+
+        if(commandLowerTemp == "cancel" || commandLowerTemp == "/cancel")
+        {
+            //--- 取消操作，重置狀態
+            g_userState = STATE_IDLE;
+            SendTelegramMessage("[信息] 操作已取消");
+            SendMenuPanel();
+            return;
+        }
+
         //--- 檢查是否為純數字輸入
         double price = StringToDouble(command);
 
@@ -1119,7 +1134,7 @@ void ProcessCommand(string command)
         else
         {
             //--- 無效的數字輸入
-            SendTelegramMessage("[錯誤] 無效的價格！請輸入有效的數字，例如：2050.50\n\n或使用 /cancel 取消操作");
+            SendTelegramMessage("[錯誤] 無效的價格！請輸入有效的數字，例如：2050.50\n\n或輸入 cancel 取消操作");
             return;
         }
     }
@@ -1318,11 +1333,12 @@ void SendHelpMessage()
 
     helpText += "<b>ℹ️ 其他指令：</b>\n";
     helpText += "/help - 顯示此幫助信息\n";
-    helpText += "/cancel - 取消當前操作（如等待輸入價格時）\n\n";
+    helpText += "/cancel 或 cancel - 取消當前操作\n\n";
 
     helpText += "<i>💡 提示：</i>\n";
     helpText += "<i>• 所有指令都會作用於所有交易品種的所有倉位</i>\n";
     helpText += "<i>• 點擊按鈕設置 TP/SL 時，直接輸入數字即可</i>\n";
+    helpText += "<i>• 等待輸入時，輸入 cancel 可隨時取消</i>\n";
     helpText += "<i>• 操作完成後會自動顯示操作面板</i>";
 
     SendTelegramMessage(helpText);
