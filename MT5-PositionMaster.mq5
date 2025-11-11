@@ -135,7 +135,6 @@ int OnInit()
 
     //--- 發送啟動通知
     string startMsg = "[成功] MT5-PositionMaster EA 已成功啟動！\n\n";
-    startMsg += "[統計] 交易品種：" + _Symbol + "\n";
     startMsg += "[系統] EA 版本：1.0.0\n";
     startMsg += "[時間] 輪詢間隔：" + IntegerToString(InpPollingInterval) + " 秒\n\n";
     startMsg += "輸入 /help 查看所有可用指令。";
@@ -143,7 +142,6 @@ int OnInit()
     SendTelegramMessage(startMsg);
 
     Print("[成功] MT5-PositionMaster EA 初始化成功！");
-    Print("[統計] 交易品種：", _Symbol);
     Print("[時間] 輪詢間隔：", InpPollingInterval, " 秒");
     Print("[調試] g_isInitialized 已設置為: true");
 
@@ -716,9 +714,9 @@ string UrlEncode(string str)
  *          - /help - 顯示幫助信息
  *          - /settp - 設置止盈
  *          - /setsl - 設置止損
- *          - /rmtp - 刪除止盈
- *          - /rmsl - 刪除止損
- *          - /closehalf - 平掉一半倉位
+ *          - /rtp - 刪除止盈
+ *          - /rsl - 刪除止損
+ *          - /ch - 平掉一半倉位
  * @param command 指令字符串
  * @note 包含完整的參數驗證和錯誤處理
  */
@@ -787,8 +785,8 @@ void ProcessCommand(string command)
         return;
     }
 
-    //--- /rmtp 指令
-    if(StringFind(commandLower, "/rmtp") == 0)
+    //--- /rtp 指令
+    if(StringFind(commandLower, "/rtp") == 0)
     {
         int count = RemoveAllTakeProfit();
         if(count > 0)
@@ -800,8 +798,8 @@ void ProcessCommand(string command)
         return;
     }
 
-    //--- /rmsl 指令
-    if(StringFind(commandLower, "/rmsl") == 0)
+    //--- /rsl 指令
+    if(StringFind(commandLower, "/rsl") == 0)
     {
         int count = RemoveAllStopLoss();
         if(count > 0)
@@ -813,8 +811,8 @@ void ProcessCommand(string command)
         return;
     }
 
-    //--- /closehalf 指令
-    if(StringFind(commandLower, "/closehalf") == 0)
+    //--- /ch 指令
+    if(StringFind(commandLower, "/ch") == 0)
     {
         //--- 先檢查倉位數量
         int totalPos = PositionsTotal();
@@ -855,10 +853,10 @@ void SendHelpMessage()
     helpText += "   範例：/settp 1.1000\n\n";
     helpText += "/setsl &lt;價格&gt; - 設置所有倉位的止損價格\n";
     helpText += "   範例：/setsl 1.0900\n\n";
-    helpText += "/rmtp - 刪除所有倉位的止盈設置\n\n";
-    helpText += "/rmsl - 刪除所有倉位的止損設置\n\n";
+    helpText += "/rtp - 刪除所有倉位的止盈設置\n\n";
+    helpText += "/rsl - 刪除所有倉位的止損設置\n\n";
     helpText += "<b>[統計] 倉位管理：</b>\n";
-    helpText += "/closehalf - 平掉約一半的總倉位手數\n";
+    helpText += "/ch - 平掉約一半的總倉位手數\n";
     helpText += "   （智能選擇訂單以達到最接近 50%）\n\n";
     helpText += "<b>[信息] 幫助：</b>\n";
     helpText += "/help - 顯示此幫助信息\n\n";
