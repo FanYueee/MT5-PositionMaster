@@ -34,20 +34,17 @@
 #property strict
 
 //+------------------------------------------------------------------+
-//| 輸入參數                                                           |
+//| 輸入參數（已寫死配置）                                                |
 //+------------------------------------------------------------------+
 
 /** @brief Telegram Bot Token */
-input string InpBotToken = "";                    // Telegram Bot Token (必填)
+const string InpBotToken = "";
 
-/** @brief 授權的 Telegram Chat ID */
-input long InpChatID = 0;                         // 授權的 Chat ID (必填)
+/** @brief 授權的 Telegram Chat ID（已寫死） */
+const long InpChatID = 0;
 
 /** @brief 輪詢間隔（秒） */
 input int InpPollingInterval = 2;                 // 輪詢間隔（秒）
-
-/** @brief 是否啟用詳細日誌 */
-input bool InpVerboseLogging = true;              // 啟用詳細日誌
 
 /** @brief 止盈/止損價格的最小距離點數 */
 input int InpMinTPSLDistance = 10;                // TP/SL 最小距離（點）
@@ -129,6 +126,10 @@ int OnInit()
     g_errorCount = 0;
     g_isInitialized = true;
 
+    Print("========================================");
+    Print("MT5-PositionMaster EA v1.0.0 已啟動");
+    Print("========================================");
+
     //--- 獲取最新的 update ID，避免處理舊消息
     GetLatestUpdateID();
 
@@ -144,6 +145,7 @@ int OnInit()
     Print("[成功] MT5-PositionMaster EA 初始化成功！");
     Print("[統計] 交易品種：", _Symbol);
     Print("[時間] 輪詢間隔：", InpPollingInterval, " 秒");
+    Print("[調試] g_isInitialized 已設置為: true");
 
     return INIT_SUCCEEDED;
 }
@@ -225,7 +227,10 @@ void OnTimer()
  */
 void GetLatestUpdateID()
 {
-    string url = g_telegramAPIURL + "/getUpdates";
+    // 方法：使用 offset=-1 獲取最新的一條更新，然後立即確認它
+    // 這樣可以跳過所有舊消息
+
+    string url = g_telegramAPIURL + "/getUpdates?offset=-1&limit=1";
     string headers = "Content-Type: application/json\r\n";
     char post[];
     char result[];
@@ -238,11 +243,11 @@ void GetLatestUpdateID()
     {
         resultString = CharArrayToString(result);
 
-        //--- 解析 JSON 獲取最新的 update_id
+        //--- 查找最新的 update_id
         int start = StringFind(resultString, "\"update_id\":");
         if(start >= 0)
         {
-            start += 13; // 長度 "\"update_id\"："
+            start += 13; // 長度 "\"update_id\":"
             int end = StringFind(resultString, ",", start);
             if(end < 0)
                 end = StringFind(resultString, "}", start);
@@ -252,8 +257,11 @@ void GetLatestUpdateID()
                 string updateIDStr = StringSubstr(resultString, start, end - start);
                 g_lastUpdateID = StringToInteger(updateIDStr);
 
-                if(InpVerboseLogging)
-                    Print("[標記] 初始 Update ID 設置為：", g_lastUpdateID);
+                // 立即確認這條消息（使用 offset = update_id + 1）
+                // 這會告訴 Telegram 清除所有 <= update_id 的舊消息
+                string confirmUrl = g_telegramAPIURL + "/getUpdates?offset=" + IntegerToString(g_lastUpdateID + 1) + "&limit=1";
+                char confirmResult[];
+                WebRequest("GET", confirmUrl, headers, timeout, post, confirmResult, headers);
             }
         }
     }
@@ -271,7 +279,9 @@ void GetLatestUpdateID()
  */
 bool ProcessTelegramUpdates()
 {
-    string url = g_telegramAPIURL + "/getUpdates?offset=" + IntegerToString(g_lastUpdateID + 1) + "&timeout=10";
+    // 明確指定要接收 message 更新
+    string url = g_telegramAPIURL + "/getUpdates?offset=" + IntegerToString(g_lastUpdateID + 1) +
+                 "&timeout=10&allowed_updates=[\"message\"]";
     string headers = "Content-Type: application/json\r\n";
     char post[];
     char result[];
@@ -308,26 +318,68 @@ bool ProcessTelegramUpdates()
 
     resultString = CharArrayToString(result);
 
-    if(InpVerboseLogging && StringLen(resultString) > 100)
-        Print("[接收] 收到響應：", StringSubstr(resultString, 0, 100), "...");
-
     //--- 解析 JSON 響應
     if(StringFind(resultString, "\"ok\":true") < 0)
     {
-        Print("[錯誤] Telegram API 響應錯誤：", resultString);
+        Print("[錯誤] Telegram API 響應錯誤");
         return false;
     }
 
     //--- 提取 result 數組
+
     int resultStart = StringFind(resultString, "\"result\":[");
+
     if(resultStart < 0)
         return true; // 沒有新消息
 
-    resultStart += 10;
-    int resultEnd = StringFind(resultString, "]", resultStart);
+    // 找到 [ 的位置（在 "result":[ 中）
+    int bracketStart = resultStart + 9;  // "result": 有 9 個字符
+    resultStart = bracketStart + 1;  // 數組內容從 [ 之後開始
+
+    //--- 使用括號計數法找到 result 數組的真正結束位置
+    int bracketCount = 0;
+    int resultEnd = -1;
+    bool inString = false;
+
+    for(int i = bracketStart; i < StringLen(resultString); i++)
+    {
+        ushort ch = StringGetCharacter(resultString, i);
+
+        // 處理字符串內的引號
+        if(ch == '"')
+        {
+            // 計算前面連續的反斜杠數量
+            int backslashCount = 0;
+            int j = i - 1;
+            while(j >= 0 && StringGetCharacter(resultString, j) == '\\')
+            {
+                backslashCount++;
+                j--;
+            }
+
+            // 偶數個反斜杠（包括0）意味著引號不是轉義的
+            if(backslashCount % 2 == 0)
+                inString = !inString;
+        }
+
+        if(!inString)
+        {
+            if(ch == '[')
+                bracketCount++;
+            else if(ch == ']')
+            {
+                bracketCount--;
+                if(bracketCount == 0)
+                {
+                    resultEnd = i;
+                    break;
+                }
+            }
+        }
+    }
 
     if(resultEnd < 0 || resultEnd <= resultStart)
-        return true; // 空結果
+        return true; // 空結果或解析失敗
 
     string resultArray = StringSubstr(resultString, resultStart, resultEnd - resultStart);
 
@@ -352,22 +404,36 @@ void ParseAndProcessUpdates(string updates)
 
     while(pos < StringLen(updates))
     {
-        //--- 查找下一個 update
-        int updateStart = StringFind(updates, "{\"update_id\":", pos);
+        //--- 查找下一個 { 開始符
+        int updateStart = StringFind(updates, "{", pos);
         if(updateStart < 0)
             break;
 
-        //--- 查找 update 結束位置
+        //--- 查找對應的 } 結束位置（使用括號計數）
         int braceCount = 0;
-        int updateEnd = updateStart;
+        int updateEnd = -1;
         bool inString = false;
 
         for(int i = updateStart; i < StringLen(updates); i++)
         {
             ushort ch = StringGetCharacter(updates, i);
 
-            if(ch == '"' && (i == 0 || StringGetCharacter(updates, i - 1) != '\\'))
-                inString = !inString;
+            // 處理字符串內的引號（正確處理轉義字符，包括連續的反斜杠）
+            if(ch == '"')
+            {
+                // 計算前面有多少個連續的反斜杠
+                int backslashCount = 0;
+                int j = i - 1;
+                while(j >= 0 && StringGetCharacter(updates, j) == '\\')
+                {
+                    backslashCount++;
+                    j--;
+                }
+
+                // 如果反斜杠數量是偶數（包括 0），則這個引號不是轉義的
+                if(backslashCount % 2 == 0)
+                    inString = !inString;
+            }
 
             if(!inString)
             {
@@ -433,9 +499,6 @@ void ProcessSingleUpdate(string update)
     if(StringLen(messageText) == 0)
         return; // 沒有文本消息
 
-    if(InpVerboseLogging)
-        Print("[消息] 收到指令：", messageText);
-
     //--- 處理指令
     ProcessCommand(messageText);
 }
@@ -472,19 +535,50 @@ long ExtractUpdateID(string json)
  */
 long ExtractChatID(string json)
 {
-    int start = StringFind(json, "\"chat\":{\"id\":");
+    // 查找 "chat" 字段
+    int start = StringFind(json, "\"chat\"");
     if(start < 0)
         return 0;
 
-    start += 14;
-    int end = StringFind(json, ",", start);
-    if(end < 0)
-        end = StringFind(json, "}", start);
+    // 從 "chat" 之後查找 "id"
+    start = StringFind(json, "\"id\"", start);
+    if(start < 0)
+        return 0;
+
+    // 找到 "id": 之後的數字開始位置
+    start = StringFind(json, ":", start);
+    if(start < 0)
+        return 0;
+
+    start++; // 跳過冒號
+
+    // 跳過空格
+    while(start < StringLen(json))
+    {
+        ushort ch = StringGetCharacter(json, start);
+        if(ch != ' ' && ch != '\t' && ch != '\n' && ch != '\r')
+            break;
+        start++;
+    }
+
+    // 查找數字結束位置
+    int end = start;
+    while(end < StringLen(json))
+    {
+        ushort ch = StringGetCharacter(json, end);
+        // 數字、負號、或空格以外的字符表示結束
+        if(ch != '-' && ch != '+' && (ch < '0' || ch > '9'))
+            break;
+        end++;
+    }
 
     if(end <= start)
         return 0;
 
     string idStr = StringSubstr(json, start, end - start);
+    StringTrimLeft(idStr);
+    StringTrimRight(idStr);
+
     return StringToInteger(idStr);
 }
 
@@ -566,9 +660,6 @@ bool SendTelegramMessageToChatID(string message, long chatID)
         return false;
     }
 
-    if(InpVerboseLogging)
-        Print("[成功] 消息已發送：", message);
-
     return true;
 }
 
@@ -582,17 +673,24 @@ bool SendTelegramMessageToChatID(string message, long chatID)
 string UrlEncode(string str)
 {
     string result = "";
+    uchar bytes[];
 
-    for(int i = 0; i < StringLen(str); i++)
+    // 將字符串轉換為 UTF-8 字節數組
+    int len = StringToCharArray(str, bytes, 0, WHOLE_ARRAY, CP_UTF8);
+    if(len > 0)
+        len--; // 移除字符串結束符
+
+    for(int i = 0; i < len; i++)
     {
-        ushort ch = StringGetCharacter(str, i);
+        uchar ch = bytes[i];
 
+        // 不需要編碼的字符（RFC 3986）
         if((ch >= 'A' && ch <= 'Z') ||
            (ch >= 'a' && ch <= 'z') ||
            (ch >= '0' && ch <= '9') ||
            ch == '-' || ch == '_' || ch == '.' || ch == '~')
         {
-            result += ShortToString(ch);
+            result += CharToString(ch);
         }
         else if(ch == ' ')
         {
@@ -600,13 +698,8 @@ string UrlEncode(string str)
         }
         else
         {
-            result += "%" + IntegerToString(ch, 2, '0');
-            if(ch > 127) // UTF-8 字符
-            {
-                // 簡化處理：使用十六進制表示
-                result = StringSubstr(result, 0, StringLen(result) - 1);
-                result += StringFormat("%%%.2X", ch);
-            }
+            // 使用正確的十六進制格式（大寫）
+            result += StringFormat("%%%02X", ch);
         }
     }
 
