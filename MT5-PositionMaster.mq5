@@ -46,9 +46,6 @@ input long InpChatID = 0;
 /** @brief 輪詢間隔（秒） */
 input int InpPollingInterval = 2;                 // 輪詢間隔（秒）
 
-/** @brief 止盈/止損價格的最小距離點數 */
-input int InpMinTPSLDistance = 10;                // TP/SL 最小距離（點）
-
 //+------------------------------------------------------------------+
 //| 全局變量                                                           |
 //+------------------------------------------------------------------+
@@ -73,6 +70,9 @@ double g_point = 0.0;
 
 /** @brief 商品小數位數 */
 int g_digits = 0;
+
+/** @brief 最後操作的詳細結果訊息 */
+string g_lastOperationResult = "";
 
 //+------------------------------------------------------------------+
 //| Expert 初始化函數                                                  |
@@ -753,11 +753,11 @@ void ProcessCommand(string command)
         {
             int count = ModifyAllTakeProfit(price);
             if(count > 0)
-                SendTelegramMessage("[成功] 成功修改 " + IntegerToString(count) + " 個倉位的止盈價格為 " + DoubleToString(price, g_digits));
+                SendTelegramMessage("[成功] 成功修改 " + IntegerToString(count) + " 個倉位的止盈價格為 " + DoubleToString(price, g_digits) + "\n\n" + g_lastOperationResult);
             else if(count == 0)
                 SendTelegramMessage("[信息] 當前沒有開倉倉位");
             else
-                SendTelegramMessage("[錯誤] 修改止盈失敗！請檢查 MT5 日誌。");
+                SendTelegramMessage("[錯誤] 修改止盈失敗\n\n" + g_lastOperationResult);
         }
         else
         {
@@ -774,11 +774,11 @@ void ProcessCommand(string command)
         {
             int count = ModifyAllStopLoss(price);
             if(count > 0)
-                SendTelegramMessage("[成功] 成功修改 " + IntegerToString(count) + " 個倉位的止損價格為 " + DoubleToString(price, g_digits));
+                SendTelegramMessage("[成功] 成功修改 " + IntegerToString(count) + " 個倉位的止損價格為 " + DoubleToString(price, g_digits) + "\n\n" + g_lastOperationResult);
             else if(count == 0)
                 SendTelegramMessage("[信息] 當前沒有開倉倉位");
             else
-                SendTelegramMessage("[錯誤] 修改止損失敗！請檢查 MT5 日誌。");
+                SendTelegramMessage("[錯誤] 修改止損失敗\n\n" + g_lastOperationResult);
         }
         else
         {
@@ -792,11 +792,11 @@ void ProcessCommand(string command)
     {
         int count = RemoveAllTakeProfit();
         if(count > 0)
-            SendTelegramMessage("[成功] 成功刪除 " + IntegerToString(count) + " 個倉位的止盈設置");
+            SendTelegramMessage("[成功] 成功刪除 " + IntegerToString(count) + " 個倉位的止盈設置\n\n" + g_lastOperationResult);
         else if(count == 0)
             SendTelegramMessage("[信息] 當前沒有開倉倉位");
         else
-            SendTelegramMessage("[錯誤] 刪除止盈失敗！請檢查 MT5 日誌。");
+            SendTelegramMessage("[錯誤] 刪除止盈失敗\n\n" + g_lastOperationResult);
         return;
     }
 
@@ -805,11 +805,11 @@ void ProcessCommand(string command)
     {
         int count = RemoveAllStopLoss();
         if(count > 0)
-            SendTelegramMessage("[成功] 成功刪除 " + IntegerToString(count) + " 個倉位的止損設置");
+            SendTelegramMessage("[成功] 成功刪除 " + IntegerToString(count) + " 個倉位的止損設置\n\n" + g_lastOperationResult);
         else if(count == 0)
             SendTelegramMessage("[信息] 當前沒有開倉倉位");
         else
-            SendTelegramMessage("[錯誤] 刪除止損失敗！請檢查 MT5 日誌。");
+            SendTelegramMessage("[錯誤] 刪除止損失敗\n\n" + g_lastOperationResult);
         return;
     }
 
@@ -833,9 +833,9 @@ void ProcessCommand(string command)
         //--- 執行平倉
         double closedLots = CloseHalfPositions();
         if(closedLots > 0)
-            SendTelegramMessage("[成功] 成功平倉 " + DoubleToString(closedLots, 2) + " 手（約佔總倉位的一半）");
+            SendTelegramMessage("[成功] 成功平倉 " + DoubleToString(closedLots, 2) + " 手（約佔總倉位的一半）\n\n" + g_lastOperationResult);
         else
-            SendTelegramMessage("[錯誤] 平倉失敗！請檢查 MT5 日誌。");
+            SendTelegramMessage("[錯誤] 平倉失敗\n\n" + g_lastOperationResult);
         return;
     }
 
@@ -909,10 +909,12 @@ int ModifyAllTakeProfit(double targetPrice)
     int totalPositions = PositionsTotal();
     int modifiedCount = 0;
     int failedCount = 0;
+    string errorDetails = "";
 
     if(totalPositions == 0)
     {
         Print("[信息] 當前沒有開倉倉位");
+        g_lastOperationResult = "";
         return 0;
     }
 
@@ -924,21 +926,9 @@ int ModifyAllTakeProfit(double targetPrice)
         if(ticket == 0)
             continue;
 
-
         //--- 獲取當前倉位信息
         double currentSL = PositionGetDouble(POSITION_SL);
-        ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
-        double currentPrice = (posType == POSITION_TYPE_BUY) ?
-                             SymbolInfoDouble(_Symbol, SYMBOL_BID) :
-                             SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-
-        //--- 驗證價格合理性
-        if(!ValidateTPPrice(targetPrice, currentPrice, posType))
-        {
-            Print("[警告] 倉位 #", ticket, " 的止盈價格不合理，跳過");
-            failedCount++;
-            continue;
-        }
+        string symbol = PositionGetString(POSITION_SYMBOL);
 
         //--- 修改倉位
         MqlTradeRequest request;
@@ -948,13 +938,15 @@ int ModifyAllTakeProfit(double targetPrice)
 
         request.action = TRADE_ACTION_SLTP;
         request.position = ticket;
-        request.symbol = _Symbol;
+        request.symbol = symbol;
         request.sl = currentSL;
         request.tp = targetPrice;
 
         if(!OrderSend(request, result))
         {
-            Print("[錯誤] 倉位 #", ticket, " 修改失敗，錯誤代碼：", GetLastError());
+            int errCode = GetLastError();
+            Print("[錯誤] 倉位 #", ticket, " 修改失敗，錯誤代碼：", errCode);
+            errorDetails += "\n• 倉位 #" + IntegerToString(ticket) + " (" + symbol + ") 失敗：" + GetErrorDescription(errCode);
             failedCount++;
         }
         else if(result.retcode == TRADE_RETCODE_DONE)
@@ -965,11 +957,18 @@ int ModifyAllTakeProfit(double targetPrice)
         else
         {
             Print("[錯誤] 倉位 #", ticket, " 修改失敗，返回代碼：", result.retcode);
+            string retcodeMsg = GetRetcodeDescription(result.retcode);
+            errorDetails += "\n• 倉位 #" + IntegerToString(ticket) + " (" + symbol + ") 失敗：" + retcodeMsg;
             failedCount++;
         }
     }
 
     Print("[統計] 修改結果：成功 ", modifiedCount, " 個，失敗 ", failedCount, " 個");
+
+    //--- 生成詳細結果訊息
+    g_lastOperationResult = "[統計] 成功 " + IntegerToString(modifiedCount) + " 個，失敗 " + IntegerToString(failedCount) + " 個";
+    if(failedCount > 0)
+        g_lastOperationResult += "\n\n[失敗詳情]" + errorDetails;
 
     return (failedCount == 0) ? modifiedCount : -1;
 }
@@ -987,10 +986,12 @@ int ModifyAllStopLoss(double targetPrice)
     int totalPositions = PositionsTotal();
     int modifiedCount = 0;
     int failedCount = 0;
+    string errorDetails = "";
 
     if(totalPositions == 0)
     {
         Print("[信息] 當前沒有開倉倉位");
+        g_lastOperationResult = "";
         return 0;
     }
 
@@ -1002,21 +1003,9 @@ int ModifyAllStopLoss(double targetPrice)
         if(ticket == 0)
             continue;
 
-
         //--- 獲取當前倉位信息
         double currentTP = PositionGetDouble(POSITION_TP);
-        ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
-        double currentPrice = (posType == POSITION_TYPE_BUY) ?
-                             SymbolInfoDouble(_Symbol, SYMBOL_BID) :
-                             SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-
-        //--- 驗證價格合理性
-        if(!ValidateSLPrice(targetPrice, currentPrice, posType))
-        {
-            Print("[警告] 倉位 #", ticket, " 的止損價格不合理，跳過");
-            failedCount++;
-            continue;
-        }
+        string symbol = PositionGetString(POSITION_SYMBOL);
 
         //--- 修改倉位
         MqlTradeRequest request;
@@ -1026,13 +1015,15 @@ int ModifyAllStopLoss(double targetPrice)
 
         request.action = TRADE_ACTION_SLTP;
         request.position = ticket;
-        request.symbol = _Symbol;
+        request.symbol = symbol;
         request.sl = targetPrice;
         request.tp = currentTP;
 
         if(!OrderSend(request, result))
         {
-            Print("[錯誤] 倉位 #", ticket, " 修改失敗，錯誤代碼：", GetLastError());
+            int errCode = GetLastError();
+            Print("[錯誤] 倉位 #", ticket, " 修改失敗，錯誤代碼：", errCode);
+            errorDetails += "\n• 倉位 #" + IntegerToString(ticket) + " (" + symbol + ") 失敗：" + GetErrorDescription(errCode);
             failedCount++;
         }
         else if(result.retcode == TRADE_RETCODE_DONE)
@@ -1043,11 +1034,18 @@ int ModifyAllStopLoss(double targetPrice)
         else
         {
             Print("[錯誤] 倉位 #", ticket, " 修改失敗，返回代碼：", result.retcode);
+            string retcodeMsg = GetRetcodeDescription(result.retcode);
+            errorDetails += "\n• 倉位 #" + IntegerToString(ticket) + " (" + symbol + ") 失敗：" + retcodeMsg;
             failedCount++;
         }
     }
 
     Print("[統計] 修改結果：成功 ", modifiedCount, " 個，失敗 ", failedCount, " 個");
+
+    //--- 生成詳細結果訊息
+    g_lastOperationResult = "[統計] 成功 " + IntegerToString(modifiedCount) + " 個，失敗 " + IntegerToString(failedCount) + " 個";
+    if(failedCount > 0)
+        g_lastOperationResult += "\n\n[失敗詳情]" + errorDetails;
 
     return (failedCount == 0) ? modifiedCount : -1;
 }
@@ -1062,10 +1060,12 @@ int RemoveAllTakeProfit()
     int totalPositions = PositionsTotal();
     int modifiedCount = 0;
     int failedCount = 0;
+    string errorDetails = "";
 
     if(totalPositions == 0)
     {
         Print("[信息] 當前沒有開倉倉位");
+        g_lastOperationResult = "";
         return 0;
     }
 
@@ -1077,9 +1077,9 @@ int RemoveAllTakeProfit()
         if(ticket == 0)
             continue;
 
-
         //--- 獲取當前止損
         double currentSL = PositionGetDouble(POSITION_SL);
+        string symbol = PositionGetString(POSITION_SYMBOL);
 
         //--- 修改倉位
         MqlTradeRequest request;
@@ -1089,13 +1089,15 @@ int RemoveAllTakeProfit()
 
         request.action = TRADE_ACTION_SLTP;
         request.position = ticket;
-        request.symbol = _Symbol;
+        request.symbol = symbol;
         request.sl = currentSL;
         request.tp = 0; // 設置為 0 表示刪除止盈
 
         if(!OrderSend(request, result))
         {
-            Print("[錯誤] 倉位 #", ticket, " 修改失敗，錯誤代碼：", GetLastError());
+            int errCode = GetLastError();
+            Print("[錯誤] 倉位 #", ticket, " 修改失敗，錯誤代碼：", errCode);
+            errorDetails += "\n• 倉位 #" + IntegerToString(ticket) + " (" + symbol + ") 失敗：" + GetErrorDescription(errCode);
             failedCount++;
         }
         else if(result.retcode == TRADE_RETCODE_DONE)
@@ -1106,11 +1108,18 @@ int RemoveAllTakeProfit()
         else
         {
             Print("[錯誤] 倉位 #", ticket, " 修改失敗，返回代碼：", result.retcode);
+            string retcodeMsg = GetRetcodeDescription(result.retcode);
+            errorDetails += "\n• 倉位 #" + IntegerToString(ticket) + " (" + symbol + ") 失敗：" + retcodeMsg;
             failedCount++;
         }
     }
 
     Print("[統計] 修改結果：成功 ", modifiedCount, " 個，失敗 ", failedCount, " 個");
+
+    //--- 生成詳細結果訊息
+    g_lastOperationResult = "[統計] 成功 " + IntegerToString(modifiedCount) + " 個，失敗 " + IntegerToString(failedCount) + " 個";
+    if(failedCount > 0)
+        g_lastOperationResult += "\n\n[失敗詳情]" + errorDetails;
 
     return (failedCount == 0) ? modifiedCount : -1;
 }
@@ -1126,10 +1135,12 @@ int RemoveAllStopLoss()
     int totalPositions = PositionsTotal();
     int modifiedCount = 0;
     int failedCount = 0;
+    string errorDetails = "";
 
     if(totalPositions == 0)
     {
         Print("[信息] 當前沒有開倉倉位");
+        g_lastOperationResult = "";
         return 0;
     }
 
@@ -1141,9 +1152,9 @@ int RemoveAllStopLoss()
         if(ticket == 0)
             continue;
 
-
         //--- 獲取當前止盈
         double currentTP = PositionGetDouble(POSITION_TP);
+        string symbol = PositionGetString(POSITION_SYMBOL);
 
         //--- 修改倉位
         MqlTradeRequest request;
@@ -1153,13 +1164,15 @@ int RemoveAllStopLoss()
 
         request.action = TRADE_ACTION_SLTP;
         request.position = ticket;
-        request.symbol = _Symbol;
+        request.symbol = symbol;
         request.sl = 0; // 設置為 0 表示刪除止損
         request.tp = currentTP;
 
         if(!OrderSend(request, result))
         {
-            Print("[錯誤] 倉位 #", ticket, " 修改失敗，錯誤代碼：", GetLastError());
+            int errCode = GetLastError();
+            Print("[錯誤] 倉位 #", ticket, " 修改失敗，錯誤代碼：", errCode);
+            errorDetails += "\n• 倉位 #" + IntegerToString(ticket) + " (" + symbol + ") 失敗：" + GetErrorDescription(errCode);
             failedCount++;
         }
         else if(result.retcode == TRADE_RETCODE_DONE)
@@ -1170,11 +1183,18 @@ int RemoveAllStopLoss()
         else
         {
             Print("[錯誤] 倉位 #", ticket, " 修改失敗，返回代碼：", result.retcode);
+            string retcodeMsg = GetRetcodeDescription(result.retcode);
+            errorDetails += "\n• 倉位 #" + IntegerToString(ticket) + " (" + symbol + ") 失敗：" + retcodeMsg;
             failedCount++;
         }
     }
 
     Print("[統計] 修改結果：成功 ", modifiedCount, " 個，失敗 ", failedCount, " 個");
+
+    //--- 生成詳細結果訊息
+    g_lastOperationResult = "[統計] 成功 " + IntegerToString(modifiedCount) + " 個，失敗 " + IntegerToString(failedCount) + " 個";
+    if(failedCount > 0)
+        g_lastOperationResult += "\n\n[失敗詳情]" + errorDetails;
 
     return (failedCount == 0) ? modifiedCount : -1;
 }
@@ -1301,34 +1321,40 @@ double CloseHalfPositions()
     int closedCount = 0;
     int failedCount = 0;
     double actualClosedLots = 0;
+    string errorDetails = "";
 
     for(int i = 0; i < posCount; i++)
     {
         if(!selected[i])
             continue;
 
+        //--- 獲取倉位信息
+        if(!PositionSelectByTicket(positions[i].ticket))
+            continue;
+
+        string symbol = PositionGetString(POSITION_SYMBOL);
+        ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+
         MqlTradeRequest request;
         MqlTradeResult result;
         ZeroMemory(request);
         ZeroMemory(result);
 
-        //--- 獲取倉位類型
-        PositionGetTicket(i);
-        ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
-
         request.action = TRADE_ACTION_DEAL;
         request.position = positions[i].ticket;
-        request.symbol = _Symbol;
+        request.symbol = symbol;
         request.volume = positions[i].lots;
         request.type = (posType == POSITION_TYPE_BUY) ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
         request.price = (posType == POSITION_TYPE_BUY) ?
-                       SymbolInfoDouble(_Symbol, SYMBOL_BID) :
-                       SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+                       SymbolInfoDouble(symbol, SYMBOL_BID) :
+                       SymbolInfoDouble(symbol, SYMBOL_ASK);
         request.deviation = 10;
 
         if(!OrderSend(request, result))
         {
-            Print("[錯誤] 倉位 #", positions[i].ticket, " 平倉失敗，錯誤代碼：", GetLastError());
+            int errCode = GetLastError();
+            Print("[錯誤] 倉位 #", positions[i].ticket, " 平倉失敗，錯誤代碼：", errCode);
+            errorDetails += "\n• 倉位 #" + IntegerToString(positions[i].ticket) + " (" + symbol + ", " + DoubleToString(positions[i].lots, 2) + "手) 失敗：" + GetErrorDescription(errCode);
             failedCount++;
         }
         else if(result.retcode == TRADE_RETCODE_DONE)
@@ -1340,117 +1366,172 @@ double CloseHalfPositions()
         else
         {
             Print("[錯誤] 倉位 #", positions[i].ticket, " 平倉失敗，返回代碼：", result.retcode);
+            string retcodeMsg = GetRetcodeDescription(result.retcode);
+            errorDetails += "\n• 倉位 #" + IntegerToString(positions[i].ticket) + " (" + symbol + ", " + DoubleToString(positions[i].lots, 2) + "手) 失敗：" + retcodeMsg;
             failedCount++;
         }
     }
 
     Print("[統計] 平倉結果：成功 ", closedCount, " 個（", DoubleToString(actualClosedLots, 2), " 手），失敗 ", failedCount, " 個");
 
+    //--- 生成詳細結果訊息
+    g_lastOperationResult = "[統計] 成功 " + IntegerToString(closedCount) + " 個（" + DoubleToString(actualClosedLots, 2) + "手），失敗 " + IntegerToString(failedCount) + " 個";
+    if(failedCount > 0)
+        g_lastOperationResult += "\n\n[失敗詳情]" + errorDetails;
+
     return (failedCount == 0) ? actualClosedLots : -1;
 }
 
-//+------------------------------------------------------------------+
-//| 輔助函數                                                           |
-//+------------------------------------------------------------------+
-
 /**
- * @brief 驗證止盈價格的合理性
- * @details 檢查止盈價格是否符合以下條件：
- *          - 買單：止盈價格 > 當前價格
- *          - 賣單：止盈價格 < 當前價格
- *          - 距離當前價格至少 InpMinTPSLDistance 點
- * @param tpPrice 止盈價格
- * @param currentPrice 當前價格
- * @param posType 倉位類型
- * @return 價格合理返回 true，否則返回 false
+ * @brief 轉換系統錯誤代碼為可讀說明
+ * @param errorCode GetLastError() 返回的錯誤代碼
+ * @return 可讀的錯誤說明
  */
-bool ValidateTPPrice(double tpPrice, double currentPrice, ENUM_POSITION_TYPE posType)
+string GetErrorDescription(int errorCode)
 {
-    if(tpPrice <= 0)
-        return false;
-
-    double minDistance = InpMinTPSLDistance * g_point;
-
-    if(posType == POSITION_TYPE_BUY)
+    switch(errorCode)
     {
-        if(tpPrice <= currentPrice)
-        {
-            Print("[錯誤] 買單止盈價格必須高於當前價格");
-            return false;
-        }
+        // 交易錯誤 (4000-4999)
+        case 4000: return "無錯誤 (4000)";
+        case 4001: return "錯誤的函數參數 (4001)";
+        case 4002: return "函數執行錯誤 (4002)";
+        case 4003: return "未定義的交易品種 (4003)";
+        case 4004: return "賬戶被禁用 (4004)";
+        case 4005: return "舊版客戶端 (4005)";
+        case 4006: return "未授權的函數調用 (4006)";
+        case 4007: return "請求過於頻繁 (4007)";
+        case 4008: return "訂單被鎖定 (4008)";
+        case 4009: return "訂單被凍結 (4009)";
+        case 4010: return "只能賣出 (4010)";
+        case 4011: return "只能買入 (4011)";
+        case 4012: return "只能平倉 (4012)";
+        case 4013: return "訂單已過期 (4013)";
+        case 4014: return "修改被禁止 (4014)";
+        case 4015: return "交易環境繁忙 (4015)";
+        case 4016: return "超時等待回應 (4016)";
+        case 4017: return "無效的交易請求 (4017)";
+        case 4018: return "無效的倉位編號 (4018)";
+        case 4019: return "無效的成交量 (4019)";
+        case 4020: return "無效的價格 (4020)";
+        case 4021: return "無效的到期時間 (4021)";
+        case 4022: return "無效的訂單狀態 (4022)";
+        case 4023: return "訂單不存在 (4023)";
+        case 4024: return "無法修改訂單 (4024)";
+        case 4025: return "無法刪除訂單 (4025)";
+        case 4026: return "無法關閉倉位 (4026)";
+        case 4027: return "無法關閉多個倉位 (4027)";
+        case 4028: return "倉位已關閉 (4028)";
+        case 4029: return "訂單已刪除 (4029)";
+        case 4030: return "訂單已執行 (4030)";
 
-        if(tpPrice - currentPrice < minDistance)
-        {
-            Print("[錯誤] 止盈價格距離當前價格太近（最小 ", InpMinTPSLDistance, " 點）");
-            return false;
-        }
+        // 交易服務器錯誤 (4050-4099)
+        case 4050: return "無效的函數參數值 (4050)";
+        case 4051: return "無效的函數參數 (4051)";
+        case 4052: return "無效的訂單類型 (4052)";
+        case 4053: return "無效的訂單到期時間 (4053)";
+        case 4054: return "無效的訂單成交量 (4054)";
+        case 4055: return "無效的止損或止盈價格 (4055)";
+        case 4056: return "無效的訂單填充類型 (4056)";
+        case 4057: return "無效的訂單時間類型 (4057)";
+        case 4058: return "無效的訂單參數 (4058)";
+        case 4059: return "訂單已被修改 (4059)";
+        case 4060: return "訂單已被刪除 (4060)";
+        case 4061: return "訂單已被執行 (4061)";
+        case 4062: return "訂單已被取消 (4062)";
+        case 4063: return "訂單已過期 (4063)";
+        case 4064: return "倉位已關閉 (4064)";
+        case 4065: return "訂單已填充 (4065)";
+        case 4066: return "交易品種不存在 (4066)";
+        case 4067: return "交易品種數據不完整 (4067)";
+        case 4068: return "交易品種參數無效 (4068)";
+        case 4069: return "未授權的交易操作 (4069)";
+        case 4070: return "賬戶沒有足夠的保證金 (4070)";
+
+        // 交易執行錯誤 (4750-4760)
+        case 4750: return "無效的止損或止盈 (4750)";
+        case 4751: return "無效的交易量 (4751)";
+        case 4752: return "市場已關閉 (4752)";
+        case 4753: return "交易已被禁用 (4753)";
+        case 4754: return "資金不足 (4754)";
+        case 4755: return "價格已變動 (4755)";
+        case 4756: return "止損或止盈距離過近 (4756)";  // 這就是你提到的！
+        case 4757: return "無法修改訂單 (4757)";
+        case 4758: return "交易流已滿 (4758)";
+        case 4759: return "訂單已被修改 (4759)";
+        case 4760: return "僅允許多頭倉位 (4760)";
+        case 4761: return "僅允許空頭倉位 (4761)";
+        case 4762: return "僅允許平倉 (4762)";
+        case 4763: return "倉位已存在 (4763)";
+        case 4764: return "未知的訂單 (4764)";
+        case 4765: return "錯誤的填充類型 (4765)";
+        case 4766: return "沒有足夠的資金 (4766)";
+
+        // 運行時錯誤 (5000-5999)
+        case 5000: return "文件操作錯誤 (5000)";
+        case 5001: return "文件名過長 (5001)";
+        case 5002: return "無法打開文件 (5002)";
+        case 5003: return "文件寫入錯誤 (5003)";
+        case 5004: return "文件讀取錯誤 (5004)";
+        case 5005: return "文件不存在 (5005)";
+        case 5006: return "無法刪除文件 (5006)";
+        case 5007: return "無效的文件句柄 (5007)";
+        case 5008: return "文件尾部錯誤 (5008)";
+        case 5009: return "文件位置錯誤 (5009)";
+        case 5010: return "磁盤已滿 (5010)";
+
+        default:
+            if(errorCode >= 4000 && errorCode < 5000)
+                return "交易錯誤 (" + IntegerToString(errorCode) + ")";
+            else if(errorCode >= 5000 && errorCode < 6000)
+                return "運行時錯誤 (" + IntegerToString(errorCode) + ")";
+            else
+                return "未知錯誤 (" + IntegerToString(errorCode) + ")";
     }
-    else // POSITION_TYPE_SELL
-    {
-        if(tpPrice >= currentPrice)
-        {
-            Print("[錯誤] 賣單止盈價格必須低於當前價格");
-            return false;
-        }
-
-        if(currentPrice - tpPrice < minDistance)
-        {
-            Print("[錯誤] 止盈價格距離當前價格太近（最小 ", InpMinTPSLDistance, " 點）");
-            return false;
-        }
-    }
-
-    return true;
 }
 
 /**
- * @brief 驗證止損價格的合理性
- * @details 檢查止損價格是否符合以下條件：
- *          - 買單：止損價格 < 當前價格
- *          - 賣單：止損價格 > 當前價格
- *          - 距離當前價格至少 InpMinTPSLDistance 點
- * @param slPrice 止損價格
- * @param currentPrice 當前價格
- * @param posType 倉位類型
- * @return 價格合理返回 true，否則返回 false
+ * @brief 轉換交易返回代碼為可讀說明
+ * @param retcode 交易返回代碼
+ * @return 可讀的錯誤說明
  */
-bool ValidateSLPrice(double slPrice, double currentPrice, ENUM_POSITION_TYPE posType)
+string GetRetcodeDescription(uint retcode)
 {
-    if(slPrice <= 0)
-        return false;
-
-    double minDistance = InpMinTPSLDistance * g_point;
-
-    if(posType == POSITION_TYPE_BUY)
+    switch(retcode)
     {
-        if(slPrice >= currentPrice)
-        {
-            Print("[錯誤] 買單止損價格必須低於當前價格");
-            return false;
-        }
-
-        if(currentPrice - slPrice < minDistance)
-        {
-            Print("[錯誤] 止損價格距離當前價格太近（最小 ", InpMinTPSLDistance, " 點）");
-            return false;
-        }
+        case TRADE_RETCODE_REQUOTE:           return "價格變動 (10004)";
+        case TRADE_RETCODE_REJECT:            return "請求被拒絕 (10006)";
+        case TRADE_RETCODE_CANCEL:            return "請求被取消 (10007)";
+        case TRADE_RETCODE_PLACED:            return "訂單已下單 (10008)";
+        case TRADE_RETCODE_DONE:              return "執行成功 (10009)";
+        case TRADE_RETCODE_DONE_PARTIAL:      return "部分執行 (10010)";
+        case TRADE_RETCODE_ERROR:             return "一般錯誤 (10011)";
+        case TRADE_RETCODE_TIMEOUT:           return "請求超時 (10012)";
+        case TRADE_RETCODE_INVALID:           return "無效請求 (10013)";
+        case TRADE_RETCODE_INVALID_VOLUME:    return "無效手數 (10014)";
+        case TRADE_RETCODE_INVALID_PRICE:     return "無效價格 (10015)";
+        case TRADE_RETCODE_INVALID_STOPS:     return "無效止盈止損 (10016)";
+        case TRADE_RETCODE_TRADE_DISABLED:    return "交易已禁用 (10017)";
+        case TRADE_RETCODE_MARKET_CLOSED:     return "市場已關閉 (10018)";
+        case TRADE_RETCODE_NO_MONEY:          return "資金不足 (10019)";
+        case TRADE_RETCODE_PRICE_CHANGED:     return "價格已變動 (10020)";
+        case TRADE_RETCODE_PRICE_OFF:         return "沒有報價 (10021)";
+        case TRADE_RETCODE_INVALID_EXPIRATION: return "無效到期時間 (10022)";
+        case TRADE_RETCODE_ORDER_CHANGED:     return "訂單狀態已變更 (10023)";
+        case TRADE_RETCODE_TOO_MANY_REQUESTS: return "請求過於頻繁 (10024)";
+        case TRADE_RETCODE_NO_CHANGES:        return "沒有變更 (10025)";
+        case TRADE_RETCODE_SERVER_DISABLES_AT: return "服務器禁用自動交易 (10026)";
+        case TRADE_RETCODE_CLIENT_DISABLES_AT: return "客戶端禁用自動交易 (10027)";
+        case TRADE_RETCODE_LOCKED:            return "請求被鎖定 (10028)";
+        case TRADE_RETCODE_FROZEN:            return "訂單或倉位已凍結 (10029)";
+        case TRADE_RETCODE_INVALID_FILL:      return "無效的成交類型 (10030)";
+        case TRADE_RETCODE_CONNECTION:        return "連接錯誤 (10031)";
+        case TRADE_RETCODE_ONLY_REAL:         return "僅限真實賬戶 (10032)";
+        case TRADE_RETCODE_LIMIT_ORDERS:      return "掛單數量已達上限 (10033)";
+        case TRADE_RETCODE_LIMIT_VOLUME:      return "手數達到上限 (10034)";
+        case TRADE_RETCODE_INVALID_ORDER:     return "無效訂單 (10035)";
+        case TRADE_RETCODE_POSITION_CLOSED:   return "倉位已關閉 (10036)";
+        default:                              return "未知錯誤 (" + IntegerToString(retcode) + ")";
     }
-    else // POSITION_TYPE_SELL
-    {
-        if(slPrice <= currentPrice)
-        {
-            Print("[錯誤] 賣單止損價格必須高於當前價格");
-            return false;
-        }
-
-        if(slPrice - currentPrice < minDistance)
-        {
-            Print("[錯誤] 止損價格距離當前價格太近（最小 ", InpMinTPSLDistance, " 點）");
-            return false;
-        }
-    }
-
-    return true;
 }
 
 //+------------------------------------------------------------------+
