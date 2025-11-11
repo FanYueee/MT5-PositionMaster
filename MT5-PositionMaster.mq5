@@ -714,11 +714,11 @@ string UrlEncode(string str)
  * @brief 處理 Telegram 指令
  * @details 解析並執行收到的 Telegram 指令：
  *          - /help - 顯示幫助信息
- *          - /set_tp - 設置止盈
- *          - /set_sl - 設置止損
- *          - /remove_tp - 刪除止盈
- *          - /remove_sl - 刪除止損
- *          - /close_half - 平掉一半倉位
+ *          - /settp - 設置止盈
+ *          - /setsl - 設置止損
+ *          - /rmtp - 刪除止盈
+ *          - /rmsl - 刪除止損
+ *          - /closehalf - 平掉一半倉位
  * @param command 指令字符串
  * @note 包含完整的參數驗證和錯誤處理
  */
@@ -745,8 +745,8 @@ void ProcessCommand(string command)
         return;
     }
 
-    //--- /set_tp 指令
-    if(StringFind(commandLower, "/set_tp") == 0)
+    //--- /settp 指令
+    if(StringFind(commandLower, "/settp") == 0)
     {
         double price = ExtractPriceFromCommand(command);
         if(price > 0)
@@ -761,13 +761,13 @@ void ProcessCommand(string command)
         }
         else
         {
-            SendTelegramMessage("[錯誤] 無效的價格！用法：/set_tp 價格\n範例：/set_tp 1.1000");
+            SendTelegramMessage("[錯誤] 無效的價格！用法：/settp 價格\n範例：/settp 1.1000");
         }
         return;
     }
 
-    //--- /set_sl 指令
-    if(StringFind(commandLower, "/set_sl") == 0)
+    //--- /setsl 指令
+    if(StringFind(commandLower, "/setsl") == 0)
     {
         double price = ExtractPriceFromCommand(command);
         if(price > 0)
@@ -782,13 +782,13 @@ void ProcessCommand(string command)
         }
         else
         {
-            SendTelegramMessage("[錯誤] 無效的價格！用法：/set_sl 價格\n範例：/set_sl 1.0900");
+            SendTelegramMessage("[錯誤] 無效的價格！用法：/setsl 價格\n範例：/setsl 1.0900");
         }
         return;
     }
 
-    //--- /remove_tp 指令
-    if(StringFind(commandLower, "/remove_tp") == 0)
+    //--- /rmtp 指令
+    if(StringFind(commandLower, "/rmtp") == 0)
     {
         int count = RemoveAllTakeProfit();
         if(count > 0)
@@ -800,8 +800,8 @@ void ProcessCommand(string command)
         return;
     }
 
-    //--- /remove_sl 指令
-    if(StringFind(commandLower, "/remove_sl") == 0)
+    //--- /rmsl 指令
+    if(StringFind(commandLower, "/rmsl") == 0)
     {
         int count = RemoveAllStopLoss();
         if(count > 0)
@@ -813,8 +813,8 @@ void ProcessCommand(string command)
         return;
     }
 
-    //--- /close_half 指令
-    if(StringFind(commandLower, "/close_half") == 0)
+    //--- /closehalf 指令
+    if(StringFind(commandLower, "/closehalf") == 0)
     {
         //--- 先檢查倉位數量
         int totalPos = PositionsTotal();
@@ -851,14 +851,14 @@ void SendHelpMessage()
 {
     string helpText = "<b>[幫助] MT5-PositionMaster 指令列表</b>\n\n";
     helpText += "<b>[交易] 止盈/止損管理：</b>\n";
-    helpText += "/set_tp &lt;價格&gt; - 設置所有倉位的止盈價格\n";
-    helpText += "   範例：/set_tp 1.1000\n\n";
-    helpText += "/set_sl &lt;價格&gt; - 設置所有倉位的止損價格\n";
-    helpText += "   範例：/set_sl 1.0900\n\n";
-    helpText += "/remove_tp - 刪除所有倉位的止盈設置\n\n";
-    helpText += "/remove_sl - 刪除所有倉位的止損設置\n\n";
+    helpText += "/settp &lt;價格&gt; - 設置所有倉位的止盈價格\n";
+    helpText += "   範例：/settp 1.1000\n\n";
+    helpText += "/setsl &lt;價格&gt; - 設置所有倉位的止損價格\n";
+    helpText += "   範例：/setsl 1.0900\n\n";
+    helpText += "/rmtp - 刪除所有倉位的止盈設置\n\n";
+    helpText += "/rmsl - 刪除所有倉位的止損設置\n\n";
     helpText += "<b>[統計] 倉位管理：</b>\n";
-    helpText += "/close_half - 平掉約一半的總倉位手數\n";
+    helpText += "/closehalf - 平掉約一半的總倉位手數\n";
     helpText += "   （智能選擇訂單以達到最接近 50%）\n\n";
     helpText += "<b>[信息] 幫助：</b>\n";
     helpText += "/help - 顯示此幫助信息\n\n";
