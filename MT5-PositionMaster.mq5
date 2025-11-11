@@ -34,14 +34,14 @@
 #property strict
 
 //+------------------------------------------------------------------+
-//| 輸入參數（已寫死配置）                                                |
+//| 輸入參數                                                           |
 //+------------------------------------------------------------------+
 
 /** @brief Telegram Bot Token */
-const string InpBotToken = "";
+input string InpBotToken = "";
 
-/** @brief 授權的 Telegram Chat ID（已寫死） */
-const long InpChatID = 0;
+/** @brief 授權的 Telegram Chat ID */
+input long InpChatID = 0;
 
 /** @brief 輪詢間隔（秒） */
 input int InpPollingInterval = 2;                 // 輪詢間隔（秒）
@@ -727,6 +727,12 @@ void ProcessCommand(string command)
     //--- 移除首尾空格
     StringTrimLeft(command);
     StringTrimRight(command);
+
+    //--- 只處理以 / 開頭的指令，其他消息忽略
+    if(StringLen(command) == 0 || StringGetCharacter(command, 0) != '/')
+    {
+        return;  // 不是指令，直接返回，不處理
+    }
 
     //--- 轉換為小寫以便比較
     string commandLower = command;
