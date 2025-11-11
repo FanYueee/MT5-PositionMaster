@@ -47,6 +47,18 @@ input long InpChatID = 0;
 input int InpPollingInterval = 2;                 // 輪詢間隔（秒）
 
 //+------------------------------------------------------------------+
+//| 用戶狀態枚舉                                                        |
+//+------------------------------------------------------------------+
+
+/** @brief 用戶交互狀態枚舉 */
+enum UserState
+{
+    STATE_IDLE,           // 空閒狀態
+    STATE_WAITING_TP,     // 等待輸入止盈價格
+    STATE_WAITING_SL      // 等待輸入止損價格
+};
+
+//+------------------------------------------------------------------+
 //| 全局變量                                                           |
 //+------------------------------------------------------------------+
 
@@ -73,6 +85,9 @@ int g_digits = 0;
 
 /** @brief 最後操作的詳細結果訊息 */
 string g_lastOperationResult = "";
+
+/** @brief 用戶當前狀態 */
+UserState g_userState = STATE_IDLE;
 
 //+------------------------------------------------------------------+
 //| Expert 初始化函數                                                  |
@@ -277,9 +292,9 @@ void GetLatestUpdateID()
  */
 bool ProcessTelegramUpdates()
 {
-    // 明確指定要接收 message 更新
+    // 明確指定要接收 message 和 callback_query 更新
     string url = g_telegramAPIURL + "/getUpdates?offset=" + IntegerToString(g_lastUpdateID + 1) +
-                 "&timeout=10&allowed_updates=[\"message\"]";
+                 "&timeout=10&allowed_updates=[\"message\",\"callback_query\"]";
     string headers = "Content-Type: application/json\r\n";
     char post[];
     char result[];
@@ -467,9 +482,9 @@ void ParseAndProcessUpdates(string updates)
  * @details 處理一條 Telegram 更新消息：
  *          - 提取 update ID
  *          - 驗證 Chat ID
- *          - 提取並處理指令
+ *          - 提取並處理指令或按鈕回調
  * @param update JSON 格式的單個更新字符串
- * @note 包含完整的安全驗證機制
+ * @note 包含完整的安全驗證機制，支持 message 和 callback_query
  */
 void ProcessSingleUpdate(string update)
 {
@@ -480,6 +495,34 @@ void ProcessSingleUpdate(string update)
 
     g_lastUpdateID = updateID;
 
+    //--- 檢查是否為 callback_query（按鈕點擊）
+    if(StringFind(update, "\"callback_query\"") >= 0)
+    {
+        //--- 提取 callback_query_id
+        string callbackQueryID = ExtractCallbackQueryID(update);
+        if(StringLen(callbackQueryID) == 0)
+            return;
+
+        //--- 提取 callback_data
+        string callbackData = ExtractCallbackData(update);
+        if(StringLen(callbackData) == 0)
+            return;
+
+        //--- 提取並驗證 chat_id（在 callback_query.message.chat.id 中）
+        long chatID = ExtractChatID(update);
+        if(chatID != InpChatID)
+        {
+            Print("[警告] 未授權的 Chat ID 嘗試訪問（callback_query）：", chatID);
+            AnswerCallbackQuery(callbackQueryID, "未授權訪問");
+            return;
+        }
+
+        //--- 處理按鈕回調
+        ProcessCallbackQuery(callbackData, callbackQueryID);
+        return;
+    }
+
+    //--- 處理普通消息
     //--- 提取 chat_id
     long chatID = ExtractChatID(update);
 
@@ -614,6 +657,71 @@ string ExtractMessageText(string json)
 }
 
 /**
+ * @brief 提取 Callback Query ID
+ * @details 從 JSON 字符串中提取 callback_query.id 字段
+ * @param json JSON 格式字符串
+ * @return Callback Query ID，失敗返回空字符串
+ */
+string ExtractCallbackQueryID(string json)
+{
+    //--- 查找 "callback_query" 字段
+    int start = StringFind(json, "\"callback_query\"");
+    if(start < 0)
+        return "";
+
+    //--- 從 "callback_query" 之後查找 "id"
+    start = StringFind(json, "\"id\":\"", start);
+    if(start < 0)
+        return "";
+
+    start += 6; // 跳過 "id":"
+    int end = StringFind(json, "\"", start);
+
+    if(end <= start)
+        return "";
+
+    return StringSubstr(json, start, end - start);
+}
+
+/**
+ * @brief 提取 Callback Data
+ * @details 從 JSON 字符串中提取 callback_query.data 字段
+ * @param json JSON 格式字符串
+ * @return Callback Data，失敗返回空字符串
+ */
+string ExtractCallbackData(string json)
+{
+    //--- 查找 "data" 字段（在 callback_query 中）
+    int start = StringFind(json, "\"callback_query\"");
+    if(start < 0)
+        return "";
+
+    //--- 從 "callback_query" 之後查找 "data"
+    start = StringFind(json, "\"data\":\"", start);
+    if(start < 0)
+        return "";
+
+    start += 8; // 跳過 "data":"
+    int end = start;
+
+    //--- 查找字符串結束位置（考慮轉義字符）
+    for(int i = start; i < StringLen(json); i++)
+    {
+        ushort ch = StringGetCharacter(json, i);
+        if(ch == '"' && (i == 0 || StringGetCharacter(json, i - 1) != '\\'))
+        {
+            end = i;
+            break;
+        }
+    }
+
+    if(end <= start)
+        return "";
+
+    return StringSubstr(json, start, end - start);
+}
+
+/**
  * @brief 發送 Telegram 消息
  * @details 向預設的 Chat ID 發送消息
  * @param message 要發送的消息文本
@@ -704,6 +812,238 @@ string UrlEncode(string str)
     return result;
 }
 
+/**
+ * @brief 發送帶有 Inline Keyboard 的 Telegram 消息
+ * @details 向默認 Chat ID 發送帶有內聯鍵盤按鈕的消息
+ * @param message 要發送的消息文本
+ * @param inlineKeyboard Inline Keyboard JSON 字符串（格式：[[{...}, {...}], [...]]）
+ * @return 成功返回 true，失敗返回 false
+ * @note inlineKeyboard 應該是有效的 JSON 數組格式
+ */
+bool SendTelegramMessageWithKeyboard(string message, string inlineKeyboard)
+{
+    string url = g_telegramAPIURL + "/sendMessage";
+
+    //--- URL 編碼消息
+    string encodedMessage = UrlEncode(message);
+
+    //--- 構建 reply_markup JSON
+    string replyMarkup = "{\"inline_keyboard\":" + inlineKeyboard + "}";
+    string encodedReplyMarkup = UrlEncode(replyMarkup);
+
+    //--- 構建 POST 數據
+    string postData = "chat_id=" + IntegerToString(InpChatID) +
+                      "&text=" + encodedMessage +
+                      "&parse_mode=HTML" +
+                      "&reply_markup=" + encodedReplyMarkup;
+
+    char post[];
+    char result[];
+    string headers = "Content-Type: application/x-www-form-urlencoded\r\n";
+
+    StringToCharArray(postData, post, 0, WHOLE_ARRAY, CP_UTF8);
+    ArrayResize(post, ArraySize(post) - 1);
+
+    int res = WebRequest("POST", url, headers, 5000, post, result, headers);
+
+    if(res != 200)
+    {
+        Print("[錯誤] 發送帶按鈕的消息失敗，HTTP 代碼：", res);
+        return false;
+    }
+
+    return true;
+}
+
+/**
+ * @brief 回應 Callback Query
+ * @details 必須調用此函數來回應用戶的按鈕點擊，否則按鈕會持續顯示加載狀態
+ * @param callbackQueryID Callback Query ID
+ * @param text 可選的通知文本（顯示在屏幕頂部）
+ * @return 成功返回 true，失敗返回 false
+ * @note 即使不需要顯示通知，也必須調用此函數
+ */
+bool AnswerCallbackQuery(string callbackQueryID, string text = "")
+{
+    string url = g_telegramAPIURL + "/answerCallbackQuery";
+
+    //--- 構建 POST 數據
+    string postData = "callback_query_id=" + callbackQueryID;
+    if(StringLen(text) > 0)
+    {
+        postData += "&text=" + UrlEncode(text);
+    }
+
+    char post[];
+    char result[];
+    string headers = "Content-Type: application/x-www-form-urlencoded\r\n";
+
+    StringToCharArray(postData, post, 0, WHOLE_ARRAY, CP_UTF8);
+    ArrayResize(post, ArraySize(post) - 1);
+
+    int res = WebRequest("POST", url, headers, 5000, post, result, headers);
+
+    if(res != 200)
+    {
+        Print("[錯誤] 回應 Callback Query 失敗，HTTP 代碼：", res);
+        return false;
+    }
+
+    return true;
+}
+
+/**
+ * @brief 發送操作菜單面板
+ * @details 發送包含所有操作按鈕的 Inline Keyboard 面板
+ * @return 成功返回 true，失敗返回 false
+ * @note 面板包含：平倉一半、平掉全部、設置TP/SL、刪除TP/SL
+ */
+bool SendMenuPanel()
+{
+    //--- 構建按鈕 JSON（使用繁體中文）
+    string buttons = "[[" +
+        "{\"text\":\"✂️ 平倉一半\", \"callback_data\":\"CH\"}," +
+        "{\"text\":\"🚫 平掉全部\", \"callback_data\":\"CA\"}" +
+        "],[" +
+        "{\"text\":\"🎯 設置TP\", \"callback_data\":\"SETTP\"}," +
+        "{\"text\":\"🛡️ 設置SL\", \"callback_data\":\"SETSL\"}" +
+        "],[" +
+        "{\"text\":\"❌ 刪除TP\", \"callback_data\":\"RTP\"}," +
+        "{\"text\":\"❌ 刪除SL\", \"callback_data\":\"RSL\"}" +
+        "]]";
+
+    string message = "📋 <b>倉位管理面板</b>\n\n" +
+                     "請選擇要執行的操作：";
+
+    return SendTelegramMessageWithKeyboard(message, buttons);
+}
+
+/**
+ * @brief 處理 Callback Query（按鈕點擊）
+ * @details 處理用戶點擊 Inline Keyboard 按鈕的回調
+ * @param callbackData 按鈕的 callback_data 值
+ * @param callbackQueryID Callback Query ID（用於回應）
+ * @note 根據不同的 callback_data 執行相應操作
+ */
+void ProcessCallbackQuery(string callbackData, string callbackQueryID)
+{
+    Print("[DEBUG] 收到 Callback Query: ", callbackData);
+
+    //--- 立即回應 callback query（避免按鈕持續加載）
+    AnswerCallbackQuery(callbackQueryID);
+
+    //--- 根據按鈕 ID 執行相應操作
+    if(callbackData == "CH")
+    {
+        //--- 平倉一半
+        int totalPos = PositionsTotal();
+        if(totalPos == 0)
+        {
+            SendTelegramMessage("[信息] 當前沒有開倉倉位");
+            SendMenuPanel(); // 重新發送面板
+            return;
+        }
+        if(totalPos == 1)
+        {
+            SendTelegramMessage("[信息] 只有1個倉位，不執行平倉操作");
+            SendMenuPanel();
+            return;
+        }
+
+        double closedLots = CloseHalfPositions();
+        if(closedLots > 0)
+            SendTelegramMessage("[成功] 成功平倉 " + DoubleToString(closedLots, 2) + " 手（約佔總倉位的一半）\n\n" + g_lastOperationResult);
+        else if(closedLots == 0)
+            SendTelegramMessage("[信息] 當前沒有開倉倉位");
+        else
+            SendTelegramMessage("[錯誤] 平倉失敗\n\n" + g_lastOperationResult);
+
+        SendMenuPanel(); // 重新發送面板
+    }
+    else if(callbackData == "CA")
+    {
+        //--- 平掉全部
+        int totalPos = PositionsTotal();
+        if(totalPos == 0)
+        {
+            SendTelegramMessage("[信息] 當前沒有開倉倉位");
+            SendMenuPanel();
+            return;
+        }
+
+        double closedLots = CloseAllPositions();
+        if(closedLots > 0)
+            SendTelegramMessage("[成功] 成功平掉所有倉位，共 " + DoubleToString(closedLots, 2) + " 手\n\n" + g_lastOperationResult);
+        else if(closedLots == 0)
+            SendTelegramMessage("[信息] 當前沒有開倉倉位");
+        else
+            SendTelegramMessage("[錯誤] 平倉失敗\n\n" + g_lastOperationResult);
+
+        SendMenuPanel();
+    }
+    else if(callbackData == "SETTP")
+    {
+        //--- 設置止盈 - 進入等待輸入狀態
+        g_userState = STATE_WAITING_TP;
+        SendTelegramMessage("🎯 請輸入止盈價格（純數字）：\n\n例如：2050.50");
+        // 不重新發送面板，等待用戶輸入
+    }
+    else if(callbackData == "SETSL")
+    {
+        //--- 設置止損 - 進入等待輸入狀態
+        g_userState = STATE_WAITING_SL;
+        SendTelegramMessage("🛡️ 請輸入止損價格（純數字）：\n\n例如：2040.30");
+        // 不重新發送面板，等待用戶輸入
+    }
+    else if(callbackData == "RTP")
+    {
+        //--- 刪除止盈
+        int totalPos = PositionsTotal();
+        if(totalPos == 0)
+        {
+            SendTelegramMessage("[信息] 當前沒有開倉倉位");
+            SendMenuPanel();
+            return;
+        }
+
+        int count = RemoveAllTakeProfit();
+        if(count > 0)
+            SendTelegramMessage("[成功] 成功刪除 " + IntegerToString(count) + " 個倉位的止盈設置\n\n" + g_lastOperationResult);
+        else if(count == 0)
+            SendTelegramMessage("[信息] 當前沒有開倉倉位");
+        else
+            SendTelegramMessage("[錯誤] 刪除止盈失敗\n\n" + g_lastOperationResult);
+
+        SendMenuPanel();
+    }
+    else if(callbackData == "RSL")
+    {
+        //--- 刪除止損
+        int totalPos = PositionsTotal();
+        if(totalPos == 0)
+        {
+            SendTelegramMessage("[信息] 當前沒有開倉倉位");
+            SendMenuPanel();
+            return;
+        }
+
+        int count = RemoveAllStopLoss();
+        if(count > 0)
+            SendTelegramMessage("[成功] 成功刪除 " + IntegerToString(count) + " 個倉位的止損設置\n\n" + g_lastOperationResult);
+        else if(count == 0)
+            SendTelegramMessage("[信息] 當前沒有開倉倉位");
+        else
+            SendTelegramMessage("[錯誤] 刪除止損失敗\n\n" + g_lastOperationResult);
+
+        SendMenuPanel();
+    }
+    else
+    {
+        SendTelegramMessage("[錯誤] 未知的按鈕操作：" + callbackData);
+        SendMenuPanel();
+    }
+}
+
 //+------------------------------------------------------------------+
 //| 指令處理函數                                                       |
 //+------------------------------------------------------------------+
@@ -712,14 +1052,15 @@ string UrlEncode(string str)
  * @brief 處理 Telegram 指令
  * @details 解析並執行收到的 Telegram 指令：
  *          - /help - 顯示幫助信息
+ *          - /menu - 顯示操作面板
  *          - /settp - 設置止盈
  *          - /setsl - 設置止損
  *          - /rtp - 刪除止盈
  *          - /rsl - 刪除止損
  *          - /ch - 平掉一半倉位
  *          - /ca - 平掉所有倉位
- * @param command 指令字符串
- * @note 包含完整的參數驗證和錯誤處理
+ * @param command 指令字符串或用戶輸入
+ * @note 包含完整的參數驗證和錯誤處理，支持狀態機邏輯
  */
 void ProcessCommand(string command)
 {
@@ -727,8 +1068,64 @@ void ProcessCommand(string command)
     StringTrimLeft(command);
     StringTrimRight(command);
 
+    if(StringLen(command) == 0)
+        return;
+
+    //--- 檢查用戶是否處於等待輸入狀態
+    if(g_userState != STATE_IDLE)
+    {
+        //--- 檢查是否為純數字輸入
+        double price = StringToDouble(command);
+
+        // 驗證是否為有效數字（大於0或包含小數點）
+        bool isValidNumber = (price > 0) || (StringFind(command, ".") >= 0);
+
+        if(isValidNumber && price > 0)
+        {
+            //--- 根據狀態執行相應操作
+            if(g_userState == STATE_WAITING_TP)
+            {
+                //--- 設置止盈
+                int count = ModifyAllTakeProfit(price);
+                if(count > 0)
+                    SendTelegramMessage("[成功] 成功修改 " + IntegerToString(count) + " 個倉位的止盈價格為 " + DoubleToString(price, g_digits) + "\n\n" + g_lastOperationResult);
+                else if(count == 0)
+                    SendTelegramMessage("[信息] 當前沒有開倉倉位");
+                else
+                    SendTelegramMessage("[錯誤] 修改止盈失敗\n\n" + g_lastOperationResult);
+
+                //--- 重置狀態並重新發送面板
+                g_userState = STATE_IDLE;
+                SendMenuPanel();
+                return;
+            }
+            else if(g_userState == STATE_WAITING_SL)
+            {
+                //--- 設置止損
+                int count = ModifyAllStopLoss(price);
+                if(count > 0)
+                    SendTelegramMessage("[成功] 成功修改 " + IntegerToString(count) + " 個倉位的止損價格為 " + DoubleToString(price, g_digits) + "\n\n" + g_lastOperationResult);
+                else if(count == 0)
+                    SendTelegramMessage("[信息] 當前沒有開倉倉位");
+                else
+                    SendTelegramMessage("[錯誤] 修改止損失敗\n\n" + g_lastOperationResult);
+
+                //--- 重置狀態並重新發送面板
+                g_userState = STATE_IDLE;
+                SendMenuPanel();
+                return;
+            }
+        }
+        else
+        {
+            //--- 無效的數字輸入
+            SendTelegramMessage("[錯誤] 無效的價格！請輸入有效的數字，例如：2050.50\n\n或使用 /cancel 取消操作");
+            return;
+        }
+    }
+
     //--- 只處理以 / 開頭的指令，其他消息忽略
-    if(StringLen(command) == 0 || StringGetCharacter(command, 0) != '/')
+    if(StringGetCharacter(command, 0) != '/')
     {
         return;  // 不是指令，直接返回，不處理
     }
@@ -741,6 +1138,29 @@ void ProcessCommand(string command)
     if(StringFind(commandLower, "/help") == 0)
     {
         SendHelpMessage();
+        return;
+    }
+
+    //--- /menu 指令
+    if(StringFind(commandLower, "/menu") == 0)
+    {
+        SendMenuPanel();
+        return;
+    }
+
+    //--- /cancel 指令 - 取消當前狀態
+    if(StringFind(commandLower, "/cancel") == 0)
+    {
+        if(g_userState != STATE_IDLE)
+        {
+            g_userState = STATE_IDLE;
+            SendTelegramMessage("[信息] 操作已取消");
+            SendMenuPanel();
+        }
+        else
+        {
+            SendTelegramMessage("[信息] 當前沒有進行中的操作");
+        }
         return;
     }
 
@@ -762,6 +1182,7 @@ void ProcessCommand(string command)
         {
             SendTelegramMessage("[錯誤] 無效的價格！用法：/settp 價格\n範例：/settp 1.1000");
         }
+        SendMenuPanel(); // 重新發送面板
         return;
     }
 
@@ -783,6 +1204,7 @@ void ProcessCommand(string command)
         {
             SendTelegramMessage("[錯誤] 無效的價格！用法：/setsl 價格\n範例：/setsl 1.0900");
         }
+        SendMenuPanel(); // 重新發送面板
         return;
     }
 
@@ -796,6 +1218,7 @@ void ProcessCommand(string command)
             SendTelegramMessage("[信息] 當前沒有開倉倉位");
         else
             SendTelegramMessage("[錯誤] 刪除止盈失敗\n\n" + g_lastOperationResult);
+        SendMenuPanel(); // 重新發送面板
         return;
     }
 
@@ -809,6 +1232,7 @@ void ProcessCommand(string command)
             SendTelegramMessage("[信息] 當前沒有開倉倉位");
         else
             SendTelegramMessage("[錯誤] 刪除止損失敗\n\n" + g_lastOperationResult);
+        SendMenuPanel(); // 重新發送面板
         return;
     }
 
@@ -820,12 +1244,14 @@ void ProcessCommand(string command)
         if(totalPos == 0)
         {
             SendTelegramMessage("[信息] 當前沒有開倉倉位");
+            SendMenuPanel(); // 重新發送面板
             return;
         }
 
         if(totalPos == 1)
         {
             SendTelegramMessage("[信息] 只有1個倉位，不執行平倉操作");
+            SendMenuPanel(); // 重新發送面板
             return;
         }
 
@@ -835,6 +1261,7 @@ void ProcessCommand(string command)
             SendTelegramMessage("[成功] 成功平倉 " + DoubleToString(closedLots, 2) + " 手（約佔總倉位的一半）\n\n" + g_lastOperationResult);
         else
             SendTelegramMessage("[錯誤] 平倉失敗\n\n" + g_lastOperationResult);
+        SendMenuPanel(); // 重新發送面板
         return;
     }
 
@@ -846,6 +1273,7 @@ void ProcessCommand(string command)
         if(totalPos == 0)
         {
             SendTelegramMessage("[信息] 當前沒有開倉倉位");
+            SendMenuPanel(); // 重新發送面板
             return;
         }
 
@@ -855,6 +1283,7 @@ void ProcessCommand(string command)
             SendTelegramMessage("[成功] 成功平倉所有倉位，共 " + DoubleToString(closedLots, 2) + " 手\n\n" + g_lastOperationResult);
         else
             SendTelegramMessage("[錯誤] 平倉失敗\n\n" + g_lastOperationResult);
+        SendMenuPanel(); // 重新發送面板
         return;
     }
 
@@ -868,21 +1297,33 @@ void ProcessCommand(string command)
  */
 void SendHelpMessage()
 {
-    string helpText = "<b>[幫助] MT5-PositionMaster 指令列表</b>\n\n";
-    helpText += "<b>[交易] 止盈/止損管理：</b>\n";
+    string helpText = "<b>📖 [幫助] MT5-PositionMaster 指令列表</b>\n\n";
+
+    helpText += "<b>🎮 快速操作面板：</b>\n";
+    helpText += "/menu - 顯示操作按鈕面板（推薦使用）\n";
+    helpText += "   使用按鈕可快速執行操作，無需輸入指令\n\n";
+
+    helpText += "<b>📝 交易指令（止盈/止損管理）：</b>\n";
     helpText += "/settp &lt;價格&gt; - 設置所有倉位的止盈價格\n";
     helpText += "   範例：/settp 1.1000\n\n";
     helpText += "/setsl &lt;價格&gt; - 設置所有倉位的止損價格\n";
     helpText += "   範例：/setsl 1.0900\n\n";
     helpText += "/rtp - 刪除所有倉位的止盈設置\n\n";
     helpText += "/rsl - 刪除所有倉位的止損設置\n\n";
-    helpText += "<b>[統計] 倉位管理：</b>\n";
+
+    helpText += "<b>📊 倉位管理：</b>\n";
     helpText += "/ch - 平掉約一半的總倉位手數\n";
     helpText += "   （智能選擇訂單以達到最接近 50%）\n\n";
     helpText += "/ca - 平掉所有倉位\n\n";
-    helpText += "<b>[信息] 幫助：</b>\n";
-    helpText += "/help - 顯示此幫助信息\n\n";
-    helpText += "<i>提示：所有指令都會作用於所有交易品種的所有倉位。</i>";
+
+    helpText += "<b>ℹ️ 其他指令：</b>\n";
+    helpText += "/help - 顯示此幫助信息\n";
+    helpText += "/cancel - 取消當前操作（如等待輸入價格時）\n\n";
+
+    helpText += "<i>💡 提示：</i>\n";
+    helpText += "<i>• 所有指令都會作用於所有交易品種的所有倉位</i>\n";
+    helpText += "<i>• 點擊按鈕設置 TP/SL 時，直接輸入數字即可</i>\n";
+    helpText += "<i>• 操作完成後會自動顯示操作面板</i>";
 
     SendTelegramMessage(helpText);
 }
