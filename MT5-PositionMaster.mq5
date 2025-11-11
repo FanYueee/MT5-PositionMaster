@@ -1231,12 +1231,19 @@ double CloseHalfPositions()
         return 0;
     }
 
+    //--- 如果只有1單，不執行平倉
+    if(posCount == 1)
+    {
+        Print("[信息] 只有1個倉位，不執行平倉操作");
+        return 0;
+    }
+
     Print("[統計] 總倉位數：", posCount, "，總手數：", DoubleToString(totalLots, 2));
 
     double targetLots = totalLots / 2.0;
     Print("[目標] 目標平倉手數：", DoubleToString(targetLots, 2));
 
-    //--- 選擇要平倉的訂單（貪心算法：儘量接近目標手數）
+    //--- 選擇要平倉的訂單（貪心算法：儘量接近目標手數，傾向多平）
     bool selected[];
     ArrayResize(selected, posCount);
     ArrayInitialize(selected, false);
@@ -1244,13 +1251,14 @@ double CloseHalfPositions()
     double selectedLots = 0;
     double minDiff = MathAbs(totalLots - targetLots); // 初始差值
 
-    //--- 貪心選擇：逐個選擇訂單，使總手數最接近目標
+    //--- 貪心選擇：逐個選擇訂單，使總手數最接近目標（寧可多平）
     for(int i = 0; i < posCount; i++)
     {
         double newTotal = selectedLots + positions[i].lots;
         double newDiff = MathAbs(newTotal - targetLots);
 
-        if(newDiff < minDiff || (newDiff == minDiff && newTotal <= targetLots))
+        //--- 如果新差值更小或相等，就選擇（傾向多平）
+        if(newDiff <= minDiff)
         {
             selected[i] = true;
             selectedLots += positions[i].lots;
@@ -1262,7 +1270,7 @@ double CloseHalfPositions()
             break;
     }
 
-    //--- 如果沒有選中任何訂單，至少選擇一個
+    //--- 確保至少選擇一個訂單（但不會全平，因為前面已檢查只有1單的情況）
     bool hasSelected = false;
     for(int i = 0; i < posCount; i++)
     {
@@ -1273,7 +1281,7 @@ double CloseHalfPositions()
         }
     }
 
-    if(!hasSelected && posCount > 0)
+    if(!hasSelected && posCount > 1)
     {
         selected[0] = true;
         selectedLots = positions[0].lots;
