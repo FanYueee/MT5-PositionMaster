@@ -46,6 +46,9 @@ input long InpChatID = 0;
 /** @brief 輪詢間隔（秒） */
 input int InpPollingInterval = 2;                 // 輪詢間隔（秒）
 
+/** @brief 快速模式 - 減少面板重發以提高響應速度 */
+input bool InpFastMode = false;                   // 快速模式（減少按鈕延遲）
+
 //+------------------------------------------------------------------+
 //| 用戶狀態枚舉                                                        |
 //+------------------------------------------------------------------+
@@ -294,12 +297,12 @@ bool ProcessTelegramUpdates()
 {
     // 明確指定要接收 message 和 callback_query 更新
     string url = g_telegramAPIURL + "/getUpdates?offset=" + IntegerToString(g_lastUpdateID + 1) +
-                 "&timeout=10&allowed_updates=[\"message\",\"callback_query\"]";
+                 "&timeout=5&allowed_updates=[\"message\",\"callback_query\"]";
     string headers = "Content-Type: application/json\r\n";
     char post[];
     char result[];
     string resultString;
-    int timeout = 15000; // 15秒超時（10秒長輪詢 + 5秒緩衝）
+    int timeout = 7000; // 7秒超時（5秒長輪詢 + 2秒緩衝）
 
     int res = WebRequest("GET", url, headers, timeout, post, result, headers);
 
@@ -758,7 +761,7 @@ bool SendTelegramMessageToChatID(string message, long chatID)
     StringToCharArray(postData, post, 0, WHOLE_ARRAY, CP_UTF8);
     ArrayResize(post, ArraySize(post) - 1); // 移除字符串結束符
 
-    int res = WebRequest("POST", url, headers, 5000, post, result, headers);
+    int res = WebRequest("POST", url, headers, 2000, post, result, headers);
 
     if(res != 200)
     {
@@ -844,7 +847,7 @@ bool SendTelegramMessageWithKeyboard(string message, string inlineKeyboard)
     StringToCharArray(postData, post, 0, WHOLE_ARRAY, CP_UTF8);
     ArrayResize(post, ArraySize(post) - 1);
 
-    int res = WebRequest("POST", url, headers, 5000, post, result, headers);
+    int res = WebRequest("POST", url, headers, 2000, post, result, headers);
 
     if(res != 200)
     {
@@ -881,7 +884,7 @@ bool AnswerCallbackQuery(string callbackQueryID, string text = "")
     StringToCharArray(postData, post, 0, WHOLE_ARRAY, CP_UTF8);
     ArrayResize(post, ArraySize(post) - 1);
 
-    int res = WebRequest("POST", url, headers, 5000, post, result, headers);
+    int res = WebRequest("POST", url, headers, 2000, post, result, headers);
 
     if(res != 200)
     {
@@ -965,7 +968,8 @@ void ProcessCallbackQuery(string callbackData, string callbackQueryID)
         else
             SendTelegramMessage("[錯誤] 平倉失敗\n\n" + g_lastOperationResult);
 
-        SendMenuPanel(); // 重新發送面板
+        if(!InpFastMode)
+            SendMenuPanel(); // 重新發送面板（快速模式下跳過）
     }
     else if(callbackData == "CA")
     {
@@ -986,7 +990,8 @@ void ProcessCallbackQuery(string callbackData, string callbackQueryID)
         else
             SendTelegramMessage("[錯誤] 平倉失敗\n\n" + g_lastOperationResult);
 
-        SendMenuPanel();
+        if(!InpFastMode)
+            SendMenuPanel();
     }
     else if(callbackData == "SETTP")
     {
@@ -1021,7 +1026,8 @@ void ProcessCallbackQuery(string callbackData, string callbackQueryID)
         else
             SendTelegramMessage("[錯誤] 刪除止盈失敗\n\n" + g_lastOperationResult);
 
-        SendMenuPanel();
+        if(!InpFastMode)
+            SendMenuPanel();
     }
     else if(callbackData == "RSL")
     {
@@ -1042,7 +1048,8 @@ void ProcessCallbackQuery(string callbackData, string callbackQueryID)
         else
             SendTelegramMessage("[錯誤] 刪除止損失敗\n\n" + g_lastOperationResult);
 
-        SendMenuPanel();
+        if(!InpFastMode)
+            SendMenuPanel();
     }
     else
     {
