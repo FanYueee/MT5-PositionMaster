@@ -932,6 +932,13 @@ void ProcessCallbackQuery(string callbackData, string callbackQueryID)
     //--- 立即回應 callback query（避免按鈕持續加載）
     AnswerCallbackQuery(callbackQueryID);
 
+    //--- 如果用戶點擊了其他操作按鈕（非設置TP/SL），自動取消等待輸入狀態
+    if(g_userState != STATE_IDLE && callbackData != "SETTP" && callbackData != "SETSL")
+    {
+        Print("[DEBUG] 自動取消等待輸入狀態，執行新操作：", callbackData);
+        g_userState = STATE_IDLE;
+    }
+
     //--- 根據按鈕 ID 執行相應操作
     if(callbackData == "CH")
     {
