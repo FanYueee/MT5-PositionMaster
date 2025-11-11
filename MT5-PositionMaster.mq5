@@ -995,14 +995,34 @@ void ProcessCallbackQuery(string callbackData, string callbackQueryID)
     }
     else if(callbackData == "SETTP")
     {
-        //--- 設置止盈 - 進入等待輸入狀態
+        //--- 設置止盈 - 先檢查是否有倉位
+        int totalPos = PositionsTotal();
+        if(totalPos == 0)
+        {
+            SendTelegramMessage("[信息] 當前沒有開倉倉位");
+            if(!InpFastMode)
+                SendMenuPanel();
+            return;
+        }
+
+        //--- 有倉位，進入等待輸入狀態
         g_userState = STATE_WAITING_TP;
         SendTelegramMessage("🎯 請輸入止盈價格（純數字）：\n\n例如：2050.50\n\n輸入 cancel 可取消操作");
         // 不重新發送面板，等待用戶輸入
     }
     else if(callbackData == "SETSL")
     {
-        //--- 設置止損 - 進入等待輸入狀態
+        //--- 設置止損 - 先檢查是否有倉位
+        int totalPos = PositionsTotal();
+        if(totalPos == 0)
+        {
+            SendTelegramMessage("[信息] 當前沒有開倉倉位");
+            if(!InpFastMode)
+                SendMenuPanel();
+            return;
+        }
+
+        //--- 有倉位，進入等待輸入狀態
         g_userState = STATE_WAITING_SL;
         SendTelegramMessage("🛡️ 請輸入止損價格（純數字）：\n\n例如：2040.30\n\n輸入 cancel 可取消操作");
         // 不重新發送面板，等待用戶輸入
