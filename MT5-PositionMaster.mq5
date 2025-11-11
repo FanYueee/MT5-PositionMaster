@@ -717,6 +717,7 @@ string UrlEncode(string str)
  *          - /rtp - 刪除止盈
  *          - /rsl - 刪除止損
  *          - /ch - 平掉一半倉位
+ *          - /ca - 平掉所有倉位
  * @param command 指令字符串
  * @note 包含完整的參數驗證和錯誤處理
  */
@@ -837,6 +838,26 @@ void ProcessCommand(string command)
         return;
     }
 
+    //--- /ca 指令
+    if(StringFind(commandLower, "/ca") == 0)
+    {
+        //--- 先檢查倉位數量
+        int totalPos = PositionsTotal();
+        if(totalPos == 0)
+        {
+            SendTelegramMessage("[信息] 當前沒有開倉倉位");
+            return;
+        }
+
+        //--- 執行平倉
+        double closedLots = CloseAllPositions();
+        if(closedLots > 0)
+            SendTelegramMessage("[成功] 成功平倉所有倉位，共 " + DoubleToString(closedLots, 2) + " 手\n\n" + g_lastOperationResult);
+        else
+            SendTelegramMessage("[錯誤] 平倉失敗\n\n" + g_lastOperationResult);
+        return;
+    }
+
     //--- 未知指令
     SendTelegramMessage("[錯誤] 未知指令：" + command + "\n\n輸入 /help 查看所有可用指令。");
 }
@@ -858,6 +879,7 @@ void SendHelpMessage()
     helpText += "<b>[統計] 倉位管理：</b>\n";
     helpText += "/ch - 平掉約一半的總倉位手數\n";
     helpText += "   （智能選擇訂單以達到最接近 50%）\n\n";
+    helpText += "/ca - 平掉所有倉位\n\n";
     helpText += "<b>[信息] 幫助：</b>\n";
     helpText += "/help - 顯示此幫助信息\n\n";
     helpText += "<i>提示：所有指令都會作用於所有交易品種的所有倉位。</i>";
@@ -1195,6 +1217,124 @@ int RemoveAllStopLoss()
         g_lastOperationResult += "\n\n[失敗詳情]" + errorDetails;
 
     return (failedCount == 0) ? modifiedCount : -1;
+}
+
+/**
+ * @brief 平掉所有倉位
+ * @details 關閉所有開倉倉位
+ * @return 成功平倉的手數，失敗返回 -1
+ */
+double CloseAllPositions()
+{
+    int totalPositions = PositionsTotal();
+
+    if(totalPositions == 0)
+    {
+        Print("[信息] 當前沒有開倉倉位");
+        g_lastOperationResult = "";
+        return 0;
+    }
+
+    Print("[處理中] 開始平倉所有倉位，共 ", totalPositions, " 個");
+
+    //--- 收集所有倉位信息
+    struct PositionInfo
+    {
+        ulong ticket;
+        double lots;
+    };
+
+    PositionInfo positions[];
+    ArrayResize(positions, 0);
+
+    double totalLots = 0;
+
+    for(int i = 0; i < totalPositions; i++)
+    {
+        ulong ticket = PositionGetTicket(i);
+        if(ticket == 0)
+            continue;
+
+        double lots = PositionGetDouble(POSITION_VOLUME);
+        totalLots += lots;
+
+        int size = ArraySize(positions);
+        ArrayResize(positions, size + 1);
+        positions[size].ticket = ticket;
+        positions[size].lots = lots;
+    }
+
+    int posCount = ArraySize(positions);
+
+    if(posCount == 0)
+    {
+        Print("[信息] 沒有開倉倉位");
+        g_lastOperationResult = "";
+        return 0;
+    }
+
+    Print("[統計] 總倉位數：", posCount, "，總手數：", DoubleToString(totalLots, 2));
+
+    //--- 執行平倉
+    int closedCount = 0;
+    int failedCount = 0;
+    double actualClosedLots = 0;
+    string errorDetails = "";
+
+    for(int i = 0; i < posCount; i++)
+    {
+        //--- 獲取倉位信息
+        if(!PositionSelectByTicket(positions[i].ticket))
+            continue;
+
+        string symbol = PositionGetString(POSITION_SYMBOL);
+        ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+
+        MqlTradeRequest request;
+        MqlTradeResult result;
+        ZeroMemory(request);
+        ZeroMemory(result);
+
+        request.action = TRADE_ACTION_DEAL;
+        request.position = positions[i].ticket;
+        request.symbol = symbol;
+        request.volume = positions[i].lots;
+        request.type = (posType == POSITION_TYPE_BUY) ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
+        request.price = (posType == POSITION_TYPE_BUY) ?
+                       SymbolInfoDouble(symbol, SYMBOL_BID) :
+                       SymbolInfoDouble(symbol, SYMBOL_ASK);
+        request.deviation = 10;
+
+        if(!OrderSend(request, result))
+        {
+            int errCode = GetLastError();
+            Print("[錯誤] 倉位 #", positions[i].ticket, " 平倉失敗，錯誤代碼：", errCode);
+            errorDetails += "\n• 倉位 #" + IntegerToString(positions[i].ticket) + " (" + symbol + ", " + DoubleToString(positions[i].lots, 2) + "手) 失敗：" + GetErrorDescription(errCode);
+            failedCount++;
+        }
+        else if(result.retcode == TRADE_RETCODE_DONE)
+        {
+            Print("[成功] 倉位 #", positions[i].ticket, " 已平倉，手數：", DoubleToString(positions[i].lots, 2));
+            closedCount++;
+            actualClosedLots += positions[i].lots;
+        }
+        else
+        {
+            Print("[錯誤] 倉位 #", positions[i].ticket, " 平倉失敗，返回代碼：", result.retcode);
+            string retcodeMsg = GetRetcodeDescription(result.retcode);
+            errorDetails += "\n• 倉位 #" + IntegerToString(positions[i].ticket) + " (" + symbol + ", " + DoubleToString(positions[i].lots, 2) + "手) 失敗：" + retcodeMsg;
+            failedCount++;
+        }
+    }
+
+    Print("[統計] 平倉結果：成功 ", closedCount, " 個（", DoubleToString(actualClosedLots, 2), " 手），失敗 ", failedCount, " 個");
+
+    //--- 生成詳細結果訊息
+    g_lastOperationResult = "[統計] 成功 " + IntegerToString(closedCount) + " 個（" + DoubleToString(actualClosedLots, 2) + "手），失敗 " + IntegerToString(failedCount) + " 個";
+    if(failedCount > 0)
+        g_lastOperationResult += "\n\n[失敗詳情]" + errorDetails;
+
+    return (failedCount == 0) ? actualClosedLots : -1;
 }
 
 /**
