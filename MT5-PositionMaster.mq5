@@ -752,8 +752,10 @@ void ProcessCommand(string command)
         if(price > 0)
         {
             int count = ModifyAllTakeProfit(price);
-            if(count >= 0)
+            if(count > 0)
                 SendTelegramMessage("[成功] 成功修改 " + IntegerToString(count) + " 個倉位的止盈價格為 " + DoubleToString(price, g_digits));
+            else if(count == 0)
+                SendTelegramMessage("[信息] 當前沒有開倉倉位");
             else
                 SendTelegramMessage("[錯誤] 修改止盈失敗！請檢查 MT5 日誌。");
         }
@@ -771,8 +773,10 @@ void ProcessCommand(string command)
         if(price > 0)
         {
             int count = ModifyAllStopLoss(price);
-            if(count >= 0)
+            if(count > 0)
                 SendTelegramMessage("[成功] 成功修改 " + IntegerToString(count) + " 個倉位的止損價格為 " + DoubleToString(price, g_digits));
+            else if(count == 0)
+                SendTelegramMessage("[信息] 當前沒有開倉倉位");
             else
                 SendTelegramMessage("[錯誤] 修改止損失敗！請檢查 MT5 日誌。");
         }
@@ -787,8 +791,10 @@ void ProcessCommand(string command)
     if(StringFind(commandLower, "/remove_tp") == 0)
     {
         int count = RemoveAllTakeProfit();
-        if(count >= 0)
+        if(count > 0)
             SendTelegramMessage("[成功] 成功刪除 " + IntegerToString(count) + " 個倉位的止盈設置");
+        else if(count == 0)
+            SendTelegramMessage("[信息] 當前沒有開倉倉位");
         else
             SendTelegramMessage("[錯誤] 刪除止盈失敗！請檢查 MT5 日誌。");
         return;
@@ -798,8 +804,10 @@ void ProcessCommand(string command)
     if(StringFind(commandLower, "/remove_sl") == 0)
     {
         int count = RemoveAllStopLoss();
-        if(count >= 0)
+        if(count > 0)
             SendTelegramMessage("[成功] 成功刪除 " + IntegerToString(count) + " 個倉位的止損設置");
+        else if(count == 0)
+            SendTelegramMessage("[信息] 當前沒有開倉倉位");
         else
             SendTelegramMessage("[錯誤] 刪除止損失敗！請檢查 MT5 日誌。");
         return;
@@ -808,8 +816,23 @@ void ProcessCommand(string command)
     //--- /close_half 指令
     if(StringFind(commandLower, "/close_half") == 0)
     {
+        //--- 先檢查倉位數量
+        int totalPos = PositionsTotal();
+        if(totalPos == 0)
+        {
+            SendTelegramMessage("[信息] 當前沒有開倉倉位");
+            return;
+        }
+
+        if(totalPos == 1)
+        {
+            SendTelegramMessage("[信息] 只有1個倉位，不執行平倉操作");
+            return;
+        }
+
+        //--- 執行平倉
         double closedLots = CloseHalfPositions();
-        if(closedLots >= 0)
+        if(closedLots > 0)
             SendTelegramMessage("[成功] 成功平倉 " + DoubleToString(closedLots, 2) + " 手（約佔總倉位的一半）");
         else
             SendTelegramMessage("[錯誤] 平倉失敗！請檢查 MT5 日誌。");
