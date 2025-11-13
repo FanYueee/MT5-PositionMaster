@@ -182,13 +182,54 @@ void OnDeinit(const int reason)
     //--- 刪除定時器
     EventKillTimer();
 
-    //--- 發送關閉通知
-    string msg = "[警告] MT5-PositionMaster EA 已停止運行。\n";
-    msg += "原因代碼：" + IntegerToString(reason);
+    //--- 獲取原因說明
+    string reasonText = "";
+
+    switch(reason)
+    {
+        case REASON_PROGRAM:
+            reasonText = "EA 正常終止";
+            break;
+        case REASON_REMOVE:
+            reasonText = "EA 被從圖表移除";
+            break;
+        case REASON_RECOMPILE:
+            reasonText = "EA 被重新編譯（將自動重啟）";
+            break;
+        case REASON_CHARTCHANGE:
+            reasonText = "圖表品種或週期改變（將自動重啟）";
+            break;
+        case REASON_CHARTCLOSE:
+            reasonText = "圖表關閉";
+            break;
+        case REASON_PARAMETERS:
+            reasonText = "輸入參數改變（將自動重啟）";
+            break;
+        case REASON_ACCOUNT:
+            reasonText = "帳戶切換（將自動重啟）";
+            break;
+        case REASON_TEMPLATE:
+            reasonText = "應用新模板（將自動重啟）";
+            break;
+        case REASON_INITFAILED:
+            reasonText = "初始化失敗";
+            break;
+        case REASON_CLOSE:
+            reasonText = "終端關閉";
+            break;
+        default:
+            reasonText = "未知原因";
+            break;
+    }
+
+    //--- 發送關閉通知（所有情況都發送）
+    string msg = "MT5-PositionMaster EA 已停止\n\n";
+    msg += "原因代碼：" + IntegerToString(reason) + "\n";
+    msg += "說明：" + reasonText;
     SendTelegramMessage(msg);
 
     //--- 記錄日誌
-    Print("[警告] MT5-PositionMaster EA 已停止，原因代碼：", reason);
+    Print("[信息] MT5-PositionMaster EA 已停止，原因：", reasonText, " (代碼:", reason, ")");
     g_isInitialized = false;
 }
 
