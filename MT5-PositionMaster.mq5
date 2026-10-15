@@ -14,6 +14,8 @@
  * - 修改所有倉位的止盈/止損價格
  * - 刪除所有倉位的止盈/止損設置
  * - 平掉一半倉位
+ * - 新開倉時回報持倉均價，以及打到 TP/SL 的 pips 與盈虧
+ * - TP/SL 觸發時主動通知
  *
  * @author FanYueee
  * @date 2025-11-10
@@ -88,6 +90,45 @@ const int ERROR_COOLDOWN_SECONDS = 60;
 
 /** @brief 是否已建立 update_id 基準（啟動時連不上前為 false，避免重播積壓的舊指令） */
 bool g_baselineEstablished = false;
+
+//+------------------------------------------------------------------+
+//| 交易通知（新開倉持倉報告、TP/SL 觸發通知）                          |
+//+------------------------------------------------------------------+
+
+/** @brief 待回報的新開倉分組（商品 + 方向） */
+struct PendingOpen
+{
+    string symbol;
+    long   posType;    // POSITION_TYPE_BUY / POSITION_TYPE_SELL
+    int    newCount;   // 新開了幾個倉位
+};
+
+/** @brief 待回報的 TP/SL 觸發分組（觸發原因 + 商品 + 方向） */
+struct PendingTrigger
+{
+    long   reason;       // DEAL_REASON_TP / DEAL_REASON_SL
+    string symbol;
+    long   posType;      // 被平掉倉位的方向
+    int    count;        // 被平掉的倉位數
+    double volume;       // 總手數
+    double priceVolSum;  // 成交價 × 手數（算平倉均價用）
+    double profit;       // 價差盈虧（不含手續費、隔夜利息）
+};
+
+PendingOpen    g_pendingOpens[];
+PendingTrigger g_pendingTriggers[];
+
+/** @brief 最後一次交易事件的時間（毫秒），用於合併同一批成交 */
+ulong g_lastTradeEventMs = 0;
+
+/** @brief 交易通知連續發送失敗次數 */
+int g_notifyFailCount = 0;
+
+/** @brief 同一批成交的合併等待時間（毫秒）：最後一筆成交後等這麼久才發通知 */
+const int TRADE_NOTIFY_DEBOUNCE_MS = 1500;
+
+/** @brief 交易通知最多重試幾次，超過就放棄 */
+const int TRADE_NOTIFY_MAX_RETRY = 5;
 
 /** @brief 商品點值 */
 double g_point = 0.0;
@@ -260,6 +301,61 @@ void OnTick()
 }
 
 //+------------------------------------------------------------------+
+//| 交易事件函數                                                       |
+//+------------------------------------------------------------------+
+/**
+ * @brief 交易事件函數
+ * @details 監聽帳戶上所有成交（不論手動、其他 EA 或 TP/SL 觸發）：
+ *          - 新開倉 → 記錄分組，稍後發送持倉報告
+ *          - 因 TP/SL 平倉 → 記錄分組，稍後發送觸發通知
+ * @note 這裡只記錄，實際發送在 OnTimer 的 FlushTradeNotifications 中進行，
+ *       以便把同一批成交合併成一則訊息
+ */
+void OnTradeTransaction(const MqlTradeTransaction &trans,
+                        const MqlTradeRequest &request,
+                        const MqlTradeResult &result)
+{
+    if(!g_isInitialized)
+        return;
+
+    if(trans.type != TRADE_TRANSACTION_DEAL_ADD)
+        return;
+
+    if(!HistoryDealSelect(trans.deal))
+        return;
+
+    //--- 只處理買賣成交，排除入金/出金等 balance 類交易
+    long dealType = HistoryDealGetInteger(trans.deal, DEAL_TYPE);
+    if(dealType != DEAL_TYPE_BUY && dealType != DEAL_TYPE_SELL)
+        return;
+
+    long   entry  = HistoryDealGetInteger(trans.deal, DEAL_ENTRY);
+    string symbol = HistoryDealGetString(trans.deal, DEAL_SYMBOL);
+
+    if(entry == DEAL_ENTRY_IN)
+    {
+        //--- 開倉成交：買入成交 = 多單，賣出成交 = 空單
+        long posType = (dealType == DEAL_TYPE_BUY) ? POSITION_TYPE_BUY : POSITION_TYPE_SELL;
+        AddPendingOpen(symbol, posType);
+        g_lastTradeEventMs = GetTickCount64();
+    }
+    else if(entry == DEAL_ENTRY_OUT)
+    {
+        long reason = HistoryDealGetInteger(trans.deal, DEAL_REASON);
+        if(reason != DEAL_REASON_TP && reason != DEAL_REASON_SL)
+            return;   //--- 只通知 TP/SL 觸發，手動或指令平倉不通知
+
+        //--- 平倉成交方向與倉位相反：賣出成交平的是多單
+        long posType = (dealType == DEAL_TYPE_SELL) ? POSITION_TYPE_BUY : POSITION_TYPE_SELL;
+        AddPendingTrigger(reason, symbol, posType,
+                          HistoryDealGetDouble(trans.deal, DEAL_VOLUME),
+                          HistoryDealGetDouble(trans.deal, DEAL_PRICE),
+                          HistoryDealGetDouble(trans.deal, DEAL_PROFIT));
+        g_lastTradeEventMs = GetTickCount64();
+    }
+}
+
+//+------------------------------------------------------------------+
 //| Timer 函數                                                        |
 //+------------------------------------------------------------------+
 /**
@@ -298,6 +394,9 @@ void OnTimer()
         g_pauseUntil = 0;
         Print("[恢復] 冷卻結束，嘗試重新連線...");
     }
+
+    //--- 發送累積的交易通知（新開倉報告、TP/SL 觸發）
+    FlushTradeNotifications();
 
     //--- 輪詢 Telegram 更新
     ProcessTelegramUpdates();
@@ -2257,6 +2356,265 @@ string GetRetcodeDescription(uint retcode)
         case TRADE_RETCODE_POSITION_CLOSED:   return "倉位已關閉 (10036)";
         default:                              return "未知錯誤 (" + IntegerToString(retcode) + ")";
     }
+}
+
+//+------------------------------------------------------------------+
+//| 交易通知相關函數                                                   |
+//+------------------------------------------------------------------+
+
+/**
+ * @brief 記錄一筆新開倉（同商品同方向合併計數）
+ */
+void AddPendingOpen(string symbol, long posType)
+{
+    int n = ArraySize(g_pendingOpens);
+    for(int i = 0; i < n; i++)
+    {
+        if(g_pendingOpens[i].symbol == symbol && g_pendingOpens[i].posType == posType)
+        {
+            g_pendingOpens[i].newCount++;
+            return;
+        }
+    }
+
+    ArrayResize(g_pendingOpens, n + 1);
+    g_pendingOpens[n].symbol   = symbol;
+    g_pendingOpens[n].posType  = posType;
+    g_pendingOpens[n].newCount = 1;
+}
+
+/**
+ * @brief 記錄一筆 TP/SL 觸發平倉（同原因、同商品、同方向合併）
+ */
+void AddPendingTrigger(long reason, string symbol, long posType, double volume, double price, double profit)
+{
+    int n = ArraySize(g_pendingTriggers);
+    int idx = -1;
+    for(int i = 0; i < n; i++)
+    {
+        if(g_pendingTriggers[i].reason == reason && g_pendingTriggers[i].symbol == symbol &&
+           g_pendingTriggers[i].posType == posType)
+        {
+            idx = i;
+            break;
+        }
+    }
+
+    if(idx < 0)
+    {
+        idx = n;
+        ArrayResize(g_pendingTriggers, n + 1);
+        g_pendingTriggers[idx].reason      = reason;
+        g_pendingTriggers[idx].symbol      = symbol;
+        g_pendingTriggers[idx].posType     = posType;
+        g_pendingTriggers[idx].count       = 0;
+        g_pendingTriggers[idx].volume      = 0;
+        g_pendingTriggers[idx].priceVolSum = 0;
+        g_pendingTriggers[idx].profit      = 0;
+    }
+
+    g_pendingTriggers[idx].count++;
+    g_pendingTriggers[idx].volume      += volume;
+    g_pendingTriggers[idx].priceVolSum += price * volume;
+    g_pendingTriggers[idx].profit      += profit;
+}
+
+/**
+ * @brief 發送累積的交易通知
+ * @details 最後一筆成交後等待 TRADE_NOTIFY_DEBOUNCE_MS 才發送，讓同一批成交合併成一則訊息。
+ *          發送失敗時保留到下一輪重試，連續失敗 TRADE_NOTIFY_MAX_RETRY 次則放棄。
+ */
+void FlushTradeNotifications()
+{
+    if(ArraySize(g_pendingOpens) == 0 && ArraySize(g_pendingTriggers) == 0)
+        return;
+
+    if(GetTickCount64() - g_lastTradeEventMs < (ulong)TRADE_NOTIFY_DEBOUNCE_MS)
+        return;
+
+    string msg = "";
+
+    for(int i = 0; i < ArraySize(g_pendingTriggers); i++)
+    {
+        if(StringLen(msg) > 0)
+            msg += "\n\n";
+        msg += BuildTriggerMessage(g_pendingTriggers[i]);
+    }
+
+    for(int i = 0; i < ArraySize(g_pendingOpens); i++)
+    {
+        string report = BuildPositionReport(g_pendingOpens[i].symbol, g_pendingOpens[i].posType,
+                                            g_pendingOpens[i].newCount);
+        if(StringLen(report) == 0)
+            continue;   //--- 該組倉位在發送前已全部平掉
+        if(StringLen(msg) > 0)
+            msg += "\n\n";
+        msg += report;
+    }
+
+    if(StringLen(msg) > 0 && !SendTelegramMessage(msg))
+    {
+        g_notifyFailCount++;
+        if(g_notifyFailCount < TRADE_NOTIFY_MAX_RETRY)
+            return;   //--- 保留，下一輪重試
+        Print("[錯誤] 交易通知連續發送失敗 ", g_notifyFailCount, " 次，已放棄：\n", msg);
+    }
+
+    g_notifyFailCount = 0;
+    ArrayResize(g_pendingOpens, 0);
+    ArrayResize(g_pendingTriggers, 0);
+}
+
+/**
+ * @brief 產生 TP/SL 觸發通知文字
+ */
+string BuildTriggerMessage(const PendingTrigger &t)
+{
+    int    digits   = (int)SymbolInfoInteger(t.symbol, SYMBOL_DIGITS);
+    string currency = AccountInfoString(ACCOUNT_CURRENCY);
+    double avgPrice = (t.volume > 0) ? t.priceVolSum / t.volume : 0;
+
+    string msg = (t.reason == DEAL_REASON_TP) ? "🎯 TP 已觸發" : "🛑 SL 已觸發";
+    msg += "\n" + t.symbol + " " + PosTypeText(t.posType) + "：" + IntegerToString(t.count) +
+           " 個倉位，共 " + DoubleToString(t.volume, 2) + " 手";
+    msg += "\n平倉均價：" + DoubleToString(avgPrice, digits);
+    msg += "\n價差盈虧：" + SignedText(t.profit, 2) + " " + currency;
+    msg += "\n剩餘同向倉位：" + IntegerToString(CountPositions(t.symbol, t.posType)) + " 個";
+    return msg;
+}
+
+/**
+ * @brief 產生持倉報告（均價、打到 TP/SL 的 pips 與盈虧）
+ * @param symbol   商品
+ * @param posType  方向
+ * @param newCount 本次新開倉數
+ * @return 報告文字；該組沒有倉位時回傳空字串
+ * @note pips 以 MT5 最小跳動（SYMBOL_POINT）計算，例如黃金 0.01 = 1 pip
+ */
+string BuildPositionReport(string symbol, long posType, int newCount)
+{
+    double point    = SymbolInfoDouble(symbol, SYMBOL_POINT);
+    int    digits   = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
+    string currency = AccountInfoString(ACCOUNT_CURRENCY);
+    double dir      = (posType == POSITION_TYPE_BUY) ? 1.0 : -1.0;
+    ENUM_ORDER_TYPE orderType = (posType == POSITION_TYPE_BUY) ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+
+    int    count = 0;
+    double volume = 0, openVolSum = 0;
+
+    //--- TP / SL 各自統計：有設定的倉位數、手數、價格範圍、距離 × 手數、預估盈虧
+    int    tpCount = 0,  slCount = 0;
+    double tpVolume = 0, slVolume = 0;
+    double tpMin = 0, tpMax = 0, slMin = 0, slMax = 0;
+    double tpDistVolSum = 0, slDistVolSum = 0;
+    double tpProfit = 0, slProfit = 0;
+
+    for(int i = PositionsTotal() - 1; i >= 0; i--)
+    {
+        ulong ticket = PositionGetTicket(i);
+        if(ticket == 0)
+            continue;
+        if(PositionGetString(POSITION_SYMBOL) != symbol || PositionGetInteger(POSITION_TYPE) != posType)
+            continue;
+
+        double vol  = PositionGetDouble(POSITION_VOLUME);
+        double open = PositionGetDouble(POSITION_PRICE_OPEN);
+        double tp   = PositionGetDouble(POSITION_TP);
+        double sl   = PositionGetDouble(POSITION_SL);
+        double p    = 0;
+
+        count++;
+        volume     += vol;
+        openVolSum += open * vol;
+
+        if(tp > 0)
+        {
+            tpMin = (tpCount == 0) ? tp : MathMin(tpMin, tp);
+            tpMax = (tpCount == 0) ? tp : MathMax(tpMax, tp);
+            tpCount++;
+            tpVolume     += vol;
+            tpDistVolSum += (tp - open) * dir * vol;
+            if(OrderCalcProfit(orderType, symbol, vol, open, tp, p))
+                tpProfit += p;
+        }
+
+        if(sl > 0)
+        {
+            slMin = (slCount == 0) ? sl : MathMin(slMin, sl);
+            slMax = (slCount == 0) ? sl : MathMax(slMax, sl);
+            slCount++;
+            slVolume     += vol;
+            slDistVolSum += (sl - open) * dir * vol;
+            if(OrderCalcProfit(orderType, symbol, vol, open, sl, p))
+                slProfit += p;
+        }
+    }
+
+    if(count == 0)
+        return "";
+
+    string msg = "🆕 新開倉：" + symbol + " " + PosTypeText(posType) + " +" + IntegerToString(newCount) + " 個";
+    msg += "\n📊 目前 " + IntegerToString(count) + " 個倉位，共 " + DoubleToString(volume, 2) + " 手";
+    msg += "\n均價：" + DoubleToString(openVolSum / volume, digits);
+    msg += "\n" + LevelLine("🎯 TP", tpCount, count, tpVolume, tpMin, tpMax, tpDistVolSum, tpProfit, point, digits, currency);
+    msg += "\n" + LevelLine("🛡️ SL", slCount, count, slVolume, slMin, slMax, slDistVolSum, slProfit, point, digits, currency);
+    return msg;
+}
+
+/**
+ * @brief 產生持倉報告中 TP 或 SL 的一行
+ * @details pips = 按手數加權的平均距離 ÷ point；盈虧為各倉位打到各自價位的價差盈虧總和
+ */
+string LevelLine(string label, int setCount, int totalCount, double setVolume,
+                 double minPrice, double maxPrice, double distVolSum, double profit,
+                 double point, int digits, string currency)
+{
+    if(setCount == 0)
+        return label + "：未設定";
+
+    string priceText = DoubleToString(minPrice, digits);
+    if(MathAbs(maxPrice - minPrice) > point / 2)
+        priceText += "~" + DoubleToString(maxPrice, digits);
+
+    double pips = (point > 0) ? distVolSum / setVolume / point : 0;
+
+    string line = label + " " + priceText + "：" + SignedText(MathRound(pips), 0) + " pips ≈ " +
+                  SignedText(profit, 2) + " " + currency;
+    if(setCount < totalCount)
+        line += "（" + IntegerToString(totalCount - setCount) + " 個未設定，未計入）";
+    return line;
+}
+
+/**
+ * @brief 計算某商品某方向目前的倉位數
+ */
+int CountPositions(string symbol, long posType)
+{
+    int count = 0;
+    for(int i = PositionsTotal() - 1; i >= 0; i--)
+    {
+        ulong ticket = PositionGetTicket(i);
+        if(ticket == 0)
+            continue;
+        if(PositionGetString(POSITION_SYMBOL) == symbol && PositionGetInteger(POSITION_TYPE) == posType)
+            count++;
+    }
+    return count;
+}
+
+/** @brief 倉位方向文字 */
+string PosTypeText(long posType)
+{
+    return (posType == POSITION_TYPE_BUY) ? "多單" : "空單";
+}
+
+/** @brief 帶正負號的數字文字（正數加 +） */
+string SignedText(double value, int decimals)
+{
+    double v = NormalizeDouble(value, decimals);
+    if(v == 0)
+        v = 0;   //--- 避免 -0 顯示成 "+-0"
+    return (v >= 0 ? "+" : "") + DoubleToString(v, decimals);
 }
 
 //+------------------------------------------------------------------+
