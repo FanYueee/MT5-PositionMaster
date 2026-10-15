@@ -61,11 +61,45 @@ MT5-PositionMaster 是一個 MetaTrader 5 Expert Advisor（MT5 EA），集成了
 - **單倉位保護** - 僅有 1 個倉位時自動跳過半倉操作
 - **詳細統計** - 顯示平倉手數、成功/失敗數量
 
+### 交易通知
+
+EA 會監聽帳戶上的所有成交（手動下單、其他 EA、TP/SL 觸發都包含），主動推送到 Telegram。
+
+#### 新開倉持倉報告
+有新倉位開出時，回報該商品同方向的所有倉位：
+```
+🆕 新開倉：XAUUSD 多單 +1 個
+📊 目前 5 個倉位，共 0.10 手
+均價：2000.00
+🎯 TP 2100.00：+10000 pips ≈ +1000.00 USD
+🛡️ SL 1900.00：-10000 pips ≈ -1000.00 USD
+```
+- **持倉均價** - 按手數加權計算
+- **TP/SL 盈虧預估** - 每個倉位打到各自 TP/SL 的價差盈虧總和
+- **按商品 + 方向分組** - 多單、空單、不同商品分開計算
+- **pips 以 MT5 最小跳動計算** - 例如黃金（2 位小數）0.01 = 1 pip，價差 100 = 10000 pips
+- 倉位的 TP/SL 不一致時顯示價格範圍；未設定的倉位會標示並不計入
+
+#### TP / SL 觸發通知
+倉位被 TP 或 SL 平掉時通知：
+```
+🎯 TP 已觸發
+XAUUSD 多單：5 個倉位，共 0.10 手
+平倉均價：2100.00
+價差盈虧：+1000.00 USD
+剩餘同向倉位：0 個
+```
+- **只通知 TP/SL 觸發** - 手動平倉或 `/ca`、`/ch` 不會發送
+- **同批合併** - 同時觸發的多個倉位合併成一則訊息
+- **價差盈虧** - 不含手續費與隔夜利息
+
+> 通知會在成交後約 2–7 秒送達。斷線期間的通知會暫存，重新連上後補發。EA 未運行期間的成交不會補發。
+
 ### 性能優化
 
-- **優化超時** - 2 秒 HTTP 超時，5 秒長輪詢
+- **優化超時** - 5 秒長輪詢 + 5 秒緩衝，避免慢速線路誤判為錯誤
 - **並發處理** - 高效的訊息輪詢機制
-- **錯誤重試** - 自動處理網路錯誤和超時
+- **斷線自動重連** - 連續錯誤後自動降頻重試，網路恢復即自動恢復，無需重新掛載 EA
 
 ---
 
@@ -113,6 +147,13 @@ MT5-PositionMaster 是一個 MetaTrader 5 Expert Advisor（MT5 EA），集成了
 │  └───────────────────┬──────────────────────────────┘  │
 │                      │                                  │
 │  ┌───────────────────┴──────────────────────────────┐  │
+│  │  交易通知層                                       │  │
+│  │  • OnTradeTransaction()    (監聽成交)           │  │
+│  │  • BuildPositionReport()   (持倉報告)           │  │
+│  │  • FlushTradeNotifications() (合併發送)         │  │
+│  └───────────────────┬──────────────────────────────┘  │
+│                      │                                  │
+│  ┌───────────────────┴──────────────────────────────┐  │
 │  │  MT5 交易 API                                     │  │
 │  │  • PositionsTotal()                              │  │
 │  │  • PositionSelect()                              │  │
@@ -125,7 +166,7 @@ MT5-PositionMaster 是一個 MetaTrader 5 Expert Advisor（MT5 EA），集成了
 
 #### 長輪詢機制
 ```mql5
-// 5 秒長輪詢 + 2 秒緩衝
+// 5 秒長輪詢 + 5 秒緩衝
 getUpdates?offset=<last_id>&timeout=5&allowed_updates=["message","callback_query"]
 ```
 
@@ -362,11 +403,29 @@ if(updateID <= g_lastUpdateID)
     return; // 已處理過的訊息
 ```
 
-#### 3. 錯誤計數器
+#### 3. 斷線自動重連
 ```mql5
-// 連續錯誤超過 10 次時停止
-if(g_errorCount > MAX_ERROR_COUNT) {
-    Alert("錯誤次數過多，請檢查網絡連接和配置");
+// 連續錯誤 10 次後進入 60 秒冷卻，冷卻結束再重試，無次數上限
+if(g_errorCount >= MAX_ERROR_COUNT) {
+    if(g_pauseUntil == 0) {
+        g_pauseUntil = TimeLocal() + ERROR_COOLDOWN_SECONDS;
+        return;
+    }
+    if(TimeLocal() < g_pauseUntil)
+        return;
+    g_pauseUntil = 0;   // 冷卻結束，重試一次
+}
+```
+- 重新連上後自動恢復正常輪詢，並發送「✅ 已重新連上 Telegram」通知
+- 使用 `TimeLocal()` 計時，休市期間冷卻也會正常倒數
+
+#### 4. 防止重播舊指令
+```mql5
+// 啟動時連不上 Telegram，建立 update_id 基準前不處理任何指令
+if(!g_baselineEstablished) {
+    if(GetLatestUpdateID())
+        g_baselineEstablished = true;
+    return;
 }
 ```
 
