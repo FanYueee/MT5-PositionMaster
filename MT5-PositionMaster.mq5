@@ -80,6 +80,15 @@ int g_errorCount = 0;
 /** @brief 最大連續錯誤次數 */
 const int MAX_ERROR_COUNT = 10;
 
+/** @brief 錯誤冷卻結束時間（0 = 未在冷卻中）；用於連線韌性，避免永久停擺 */
+datetime g_pauseUntil = 0;
+
+/** @brief 進入冷卻後，多久自動重試一次（秒） */
+const int ERROR_COOLDOWN_SECONDS = 60;
+
+/** @brief 是否已建立 update_id 基準（啟動時連不上前為 false，避免重播積壓的舊指令） */
+bool g_baselineEstablished = false;
+
 /** @brief 商品點值 */
 double g_point = 0.0;
 
@@ -140,8 +149,10 @@ int OnInit()
         return INIT_FAILED;
     }
 
-    //--- 重置錯誤計數器
+    //--- 重置錯誤計數器與連線韌性狀態
     g_errorCount = 0;
+    g_pauseUntil = 0;
+    g_baselineEstablished = false;
     g_isInitialized = true;
 
     Print("========================================");
@@ -149,7 +160,9 @@ int OnInit()
     Print("========================================");
 
     //--- 獲取最新的 update ID，避免處理舊消息
-    GetLatestUpdateID();
+    g_baselineEstablished = GetLatestUpdateID();
+    if(!g_baselineEstablished)
+        Print("[警告] 啟動時無法連上 Telegram，稍後會自動重試並建立基準（在此之前不會處理任何指令，避免重播舊訊息）");
 
     //--- 發送啟動通知
     string startMsg = "[成功] MT5-PositionMaster EA 已成功啟動！\n\n";
@@ -262,11 +275,28 @@ void OnTimer()
     if(!g_isInitialized)
         return;
 
-    //--- 檢查錯誤計數
+    //--- 連線韌性：連續錯誤過多時「降頻」而非永久停擺。
+    //    冷卻結束後會再嘗試一次；一旦成功即自動恢復正常輪詢，不需手動重掛 EA。
+    //    使用 TimeLocal() 而非 TimeCurrent()：休市時伺服器時間不會前進，會導致冷卻永不結束。
     if(g_errorCount >= MAX_ERROR_COUNT)
     {
-        Print("[錯誤] 連續錯誤次數過多，暫停處理。請檢查網絡連接和 Bot Token。");
-        return;
+        if(g_pauseUntil == 0)
+        {
+            //--- 首次達到門檻：進入冷卻
+            g_pauseUntil = TimeLocal() + ERROR_COOLDOWN_SECONDS;
+            Print("[錯誤] 連續錯誤次數過多，暫停 ", ERROR_COOLDOWN_SECONDS,
+                  " 秒後自動重試。請檢查網絡連接和 Bot Token。");
+            return;
+        }
+
+        if(TimeLocal() < g_pauseUntil)
+            return;   //--- 冷卻中，暫不輪詢
+
+        //--- 冷卻結束：清除暫停旗標並重試一次。
+        //    成功 → ProcessTelegramUpdates 會歸零 g_errorCount 並發出恢復通知；
+        //    失敗 → g_errorCount 續增（仍 >= 門檻），下一輪會重新進入冷卻。
+        g_pauseUntil = 0;
+        Print("[恢復] 冷卻結束，嘗試重新連線...");
     }
 
     //--- 輪詢 Telegram 更新
@@ -281,8 +311,9 @@ void OnTimer()
  * @brief 獲取最新的 update ID
  * @details 獲取 Telegram Bot 最新的更新 ID，用於初始化時跳過舊消息
  * @note 初始化時調用，避免處理歷史消息
+ * @return true = 已成功連上並建立基準；false = 連線失敗（呼叫端應延後輪詢，不可用 offset=1 抓整批舊訊息）
  */
-void GetLatestUpdateID()
+bool GetLatestUpdateID()
 {
     // 方法：使用 offset=-1 獲取最新的一條更新，然後立即確認它
     // 這樣可以跳過所有舊消息
@@ -322,6 +353,9 @@ void GetLatestUpdateID()
             }
         }
     }
+
+    //--- 回傳是否成功連上 Telegram
+    return (res == 200);
 }
 
 /**
@@ -336,6 +370,22 @@ void GetLatestUpdateID()
  */
 bool ProcessTelegramUpdates()
 {
+    //--- 尚未建立 update_id 基準（啟動時連不上）：先重試建立基準，
+    //    成功前不處理任何指令，避免用 offset=1 抓回並執行整批積壓的舊指令
+    if(!g_baselineEstablished)
+    {
+        if(GetLatestUpdateID())
+        {
+            g_baselineEstablished = true;
+            g_errorCount = 0;
+            g_pauseUntil = 0;
+            Print("[恢復] 已建立 update_id 基準，開始正常輪詢");
+            return true;
+        }
+        g_errorCount++;   //--- 讓連線韌性機制也能對「啟動連不上」降頻
+        return false;
+    }
+
     // 明確指定要接收 message 和 callback_query 更新
     string url = g_telegramAPIURL + "/getUpdates?offset=" + IntegerToString(g_lastUpdateID + 1) +
                  "&timeout=5&allowed_updates=[\"message\",\"callback_query\"]";
@@ -343,7 +393,7 @@ bool ProcessTelegramUpdates()
     char post[];
     char result[];
     string resultString;
-    int timeout = 7000; // 7秒超時（5秒長輪詢 + 2秒緩衝）
+    int timeout = 10000; // 10秒超時（5秒長輪詢 + 5秒緩衝，避免慢速線路把正常回應誤判成錯誤而累積計數）
 
     int res = WebRequest("GET", url, headers, timeout, post, result, headers);
 
@@ -370,8 +420,13 @@ bool ProcessTelegramUpdates()
         return false;
     }
 
-    //--- 重置錯誤計數
+    //--- 連線成功：若剛從冷卻/斷線狀態恢復，通知使用者
+    if(g_errorCount >= MAX_ERROR_COUNT)
+        SendTelegramMessage("✅ 已重新連上 Telegram，恢復正常輪詢。");
+
+    //--- 重置錯誤計數與冷卻狀態
     g_errorCount = 0;
+    g_pauseUntil = 0;
 
     resultString = CharArrayToString(result);
 
